@@ -127,3 +127,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# This particular repo
+__pycache__/
+datasets/
+save_models/
+submission/ 

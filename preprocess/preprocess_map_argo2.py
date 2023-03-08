@@ -71,9 +71,9 @@ mfu = MapFeaturesUtils()
 # Specify the splits you want to preprocess
 
                          # Split,  Flag, Split percentage
-splits_to_process = dict({"train":[False,1.0], # 0.01 (1 %), 0.1 (10 %), 1.0 (100 %)
+splits_to_process = dict({"train":[True,1.0], # 0.01 (1 %), 0.1 (10 %), 1.0 (100 %)
                           "val":  [False,1.0],
-                          "test": [True,1.0]})
+                          "test": [False,1.0]})
 
 # Preprocess the corresponding folder
 
@@ -151,7 +151,7 @@ for split_name,features in splits_to_process.items():
                         Estimated time to finish ({folders_remaining} files): {round(time_per_iteration*folders_remaining/60)} min")
                 
         # Save data as pkl file
-        
+        pdb.set_trace()
         filename = os.path.join(DATASETS_DIR,"processed_map",f"{split_name}_map_data.pkl")
         print(f"Save data in {filename}")
         

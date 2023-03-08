@@ -195,6 +195,7 @@ class MapFeaturesUtils:
             diverse_centerlines = [
                 diverse_centerlines[i] for i in diverse_centerlines_idx
             ]
+            pdb.set_trace()
             test_centerlines += diverse_centerlines
 
         return test_centerlines
