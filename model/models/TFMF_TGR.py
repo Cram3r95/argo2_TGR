@@ -36,10 +36,6 @@ from torch_geometric.utils import from_scipy_sparse_matrix
 
 # Custom imports
 
-repo = git.Repo('.', search_parent_directories=True)
-BASE_DIR = repo.working_tree_dir
-sys.path.append(BASE_DIR)
-
 # Global variables 
 
 # https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
@@ -104,63 +100,56 @@ class TMFModel(pl.LightningModule):
         self.save_model_script = True
 
     @staticmethod
-    def init_args(parent_parser):
+    def init_args(parent_parser, BASE_DIR, DATASET_DIR):
         parser_dataset = parent_parser.add_argument_group("dataset")
         parser_dataset.add_argument(
-            "--log_dir", type=str, default="non_specified")
+            "--BASE_DIR", type=str, default=BASE_DIR)
         parser_dataset.add_argument(
-            "--root_folder", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "train"))
+            "--LOG_DIR", type=str, default="non_specified")
         parser_dataset.add_argument(
             "--train_split", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "train"))
+                BASE_DIR, DATASET_DIR, "train"))
         parser_dataset.add_argument(
             "--val_split", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "val"))
+                BASE_DIR, DATASET_DIR, "val"))
         parser_dataset.add_argument(
             "--test_split", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "test"))
+                BASE_DIR, DATASET_DIR, "test"))
         
         # Social preprocess
         
         parser_dataset.add_argument(
             "--train_split_pre", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "processed_social", "train_pre_clean.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_social", "train_pre_clean.pkl"))
         parser_dataset.add_argument(
             "--val_split_pre", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "processed_social", "val_pre_clean.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_social", "val_pre_clean.pkl"))
         parser_dataset.add_argument(
             "--test_split_pre", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "processed_social", "test_pre_clean.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_social", "test_pre_clean.pkl"))
         
         # Map preprocess
         
         parser_dataset.add_argument(
             "--train_split_pre_map", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "processed_map", "train_map_data.pkl"))
+BASE_DIR, DATASET_DIR, "processed_map", "train_map_data.pkl"))
         parser_dataset.add_argument(
             "--val_split_pre_map", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "processed_map", "val_map_data.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_map", "val_map_data.pkl"))
         parser_dataset.add_argument(
             "--test_split_pre_map", type=str, default=os.path.join(
-                BASE_DIR, "dataset", "argoverse", "processed_map", "test_map_data.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_map", "test_map_data.pkl"))
         
-        parser_dataset.add_argument(
-            "--reduce_dataset_size", type=int, default=0)
-        parser_dataset.add_argument(
-            "--use_preprocessed", type=bool, default=False)
-        parser_dataset.add_argument(
-            "--use_map", type=bool, default=False)
-        parser_dataset.add_argument(
-            "--align_image_with_target_x", type=bool, default=True)
+        parser_dataset.add_argument("--reduce_dataset_size", type=int, default=0)
+        parser_dataset.add_argument("--use_preprocessed", type=bool, default=False)
+        parser_dataset.add_argument("--use_map", type=bool, default=False)
+        parser_dataset.add_argument("--align_image_with_target_x", type=bool, default=True)
 
         parser_training = parent_parser.add_argument_group("training")
         parser_training.add_argument("--num_epochs", type=int, default=200)
         parser_training.add_argument("--check_val_every_n_epoch", type=int, default=10)
-        parser_training.add_argument(
-            "--lr_values", type=list, default=[1e-3, 1e-4, 1e-3 , 1e-4])
-        parser_training.add_argument(
-            "--lr_step_epochs", type=list, default=[10, 20, 35])
+        parser_training.add_argument("--lr_values", type=list, default=[1e-3, 1e-4, 1e-3 , 1e-4])
+        parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 35])
         parser_training.add_argument("--wd", type=float, default=0.01)
         parser_training.add_argument("--batch_size", type=int, default=32)
         parser_training.add_argument("--val_batch_size", type=int, default=32)
@@ -169,6 +158,7 @@ class TMFModel(pl.LightningModule):
         parser_training.add_argument("--gpus", type=int, default=1)
 
         parser_model = parent_parser.add_argument_group("model")
+        parser_dataset.add_argument("--MODEL_DIR", type=str, default="non_specified")
         parser_model.add_argument("--data_dim", type=int, default=2)
         parser_model.add_argument("--obs_len", type=int, default=50)
         parser_model.add_argument("--pred_len", type=int, default=60)
@@ -332,7 +322,7 @@ class TMFModel(pl.LightningModule):
         # If self.args.freeze_decoder is set to True, conf are useless
         
         if self.args.decoder == "decoder_residual":
-            pred_traj, conf = self.decoder(merged_info, self.is_frozen)
+            pred_traj, conf = self.decoder(merged_info, self.is_frozen, self.current_epoch)
         elif self.args.decoder == "decoder_temporal":
             traj_agent_abs_rel = displ_cat[focal_agent_id,:self.args.decoder_temporal_window_size,:self.args.data_dim]
             last_obs_agent = centers_cat[focal_agent_id,:]
@@ -584,11 +574,6 @@ class TMFModel(pl.LightningModule):
         out, conf = self.forward(train_batch)
         loss = self.prediction_loss(out, train_batch["gt"], conf)
         self.log("loss_train", loss, sync_dist=True)
-        
-        if self.save_model_script:
-            model_filename = os.path.join(BASE_DIR,"model","TFMF_TGR.py")
-            os.system(f"cp {model_filename} {self.args.log_dir}")
-            self.save_model_script = False
 
         return loss
 
@@ -603,6 +588,13 @@ class TMFModel(pl.LightningModule):
         gt = [x[0].detach().cpu().numpy() for x in val_batch["gt"]]
         if not self.args.freeze_decoder: conf = [x[0].detach().cpu().numpy() for x in conf]
 
+        if self.save_model_script:
+            model_filename = os.path.join(self.args.BASE_DIR,
+                                          self.args.MODEL_DIR,
+                                          "TFMF_TGR.py")
+            os.system(f"cp {model_filename} {self.args.LOG_DIR}")
+            self.save_model_script = False
+            
         return {"predictions": pred, 
                 "groundtruth": gt, 
                 "confidences": conf} # = validation_outputs
@@ -788,7 +780,7 @@ class DecoderResidual(nn.Module):
             self.confidences = nn.Sequential(LinearRes(self.latent_size*2, self.latent_size*2, norm=norm, ng=ng), 
                                              nn.Linear(self.latent_size*2, self.num_modes))
         
-    def forward(self, decoder_in, is_frozen):
+    def forward(self, decoder_in, is_frozen, current_epoch):
         batch_size = decoder_in.shape[0]
         
         if self.args.freeze_decoder:
@@ -800,7 +792,7 @@ class DecoderResidual(nn.Module):
             elif is_frozen: # If the first decoder has been frozen, decode and train the remaining ones
                 for i in range(self.args.mod_steps[0], sum(self.args.mod_steps)):
                     sample_wise_out.append(self.output[i](decoder_in))
-            elif is_frozen is False and self.current_epoch >= self.args.mod_full_unfreeze_epoch:
+            elif is_frozen is False and current_epoch >= self.args.mod_full_unfreeze_epoch:
                 for out_subnet in self.output:
                     sample_wise_out.append(out_subnet(decoder_in))
             else: # If you are training and is_frozen = False, use only the first decoder

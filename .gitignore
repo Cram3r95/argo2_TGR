@@ -130,6 +130,5 @@ dmypy.json
 
 # This particular repo
 __pycache__/
-datasets/
-save_models/
+dataset/
 submission/ 

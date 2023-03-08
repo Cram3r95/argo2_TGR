@@ -8,61 +8,75 @@ Created on Wed Feb 27 17:55:12 2023
 
 """
 e.g. 
-python train_TGR.py --use_preprocessed=True --devices 0 --decoder "decoder_temporal" \
-                    --ckpt_path="/home/robesafe/Argoverse2_Motion_Forecasting/lightning_logs/version_9/checkpoints/epoch=9-loss_train=127.62-loss_val=173.21-ade1_val=2.93-fde1_val=7.12-ade_val=2.94-fde_val=6.79.ckpt"
 
-python train_TGR.py --use_preprocessed=True --devices 1 --decoder "decoder_residual" --final_latent_info "fuse" --feature_dir "map_and_social"
+# How to specify the devices:
 
-python train_TGR.py --use_preprocessed True --devices 0 \
-                    --final_latent_info "fuse" \
-                    --decoder "decoder_residual" \
-                    --feature_dir "map_social_fuse_v2"
-                    he
-python train_TGR.py --use_preprocessed True \
+https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
+
+# In summary
+# e.g. --devices 0 to specifically use GPU 0 # Single-GPU
+# e.g. --devices 6,7 to specifically use GPU 6 and 7 # Multi-GPU
+           
+python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 7 \
+                    --devices 6,7 \
                     --final_latent_info "fuse" \
                     --freeze_decoder True \
                     --decoder "decoder_residual" \
-                    --feature_dir "test1" \
+                    --feature_dir "test_wandb" \
  
 """
-#                     --use_map True \
-import os
-import argparse
+
+# General purpose imports
+
 import sys
-import logging
+import os
 import pdb
-import torch
 import git
+import argparse
+import logging
+
+# DL & Math imports
+
+import numpy as np
+import pytorch_lightning as pl
+import wandb
 
 from torch.utils.data import DataLoader
-import pytorch_lightning as pl
-from torch import nn
+from pytorch_lightning.loggers import WandbLogger
 
-from data.argoverse.argo_csv_dataset import ArgoCSVDataset
-from data.argoverse.utils.torch_utils import collate_fn_dict
-from model.TFMF_TGR import TMFModel
+# Plot imports
 
-# Make newly created directories readable, writable and descendible for everyone (chmod 777)
-os.umask(0)
+# Custom imports
 
 repo = git.Repo('.', search_parent_directories=True)
 BASE_DIR = repo.working_tree_dir
 sys.path.append(BASE_DIR)
+DATASET_DIR = "dataset/argoverse2"
+MODEL_DIR = "model/models"
+
+from data.argoverse.argo_csv_dataset import ArgoCSVDataset
+from data.argoverse.utils.torch_utils import collate_fn_dict
+from model.models.TFMF_TGR import TMFModel
+
+# Make newly created directories readable, writable and descendible for everyone (chmod 777)
+os.umask(0)
 
 parser = argparse.ArgumentParser()
-parser = TMFModel.init_args(parser)
+parser = TMFModel.init_args(parser,BASE_DIR,DATASET_DIR)
 parser.add_argument("--ckpt_path", type=str, default="no_model_ckpt")
 parser.add_argument("--decoder", type=str, default="decoder_residual", required=True)
 parser.add_argument("--feature_dir", type=str, default="non_specified", required=True)
-parser.add_argument("--devices", type=list, nargs='+', default=[0,1])#, required=True)
+parser.add_argument("--devices", type=list, nargs='+', default=[0,1], required=True)
 
 logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
 
 def main():
     args = parser.parse_args()
-
+    args.MODEL_DIR = MODEL_DIR
+    
+    # Initialize train and val dataloaders
+    
     dataset = ArgoCSVDataset(args.train_split, args.train_split_pre, args, args.train_split_pre_map)
     train_loader = DataLoader(
         dataset,
@@ -83,19 +97,32 @@ def main():
         pin_memory=True # For data loading, passing pin_memory=True to a DataLoader will automatically put the fetched data Tensors in pinned memory, and thus enables faster data transfer to CUDA-enabled GPUs.
     )
     
-    # Save the model periodically by monitoring a quantity. Every metric logged with log() or log_dict() in LightningModule is a candidate for the monitor key.
+    # Callbacks
+    
+    ## Model checkpoint
+    ## Save the model periodically by monitoring a quantity. 
+    ## Every metric logged with log() or log_dict() in LightningModule is a candidate for the monitor key.
     
     checkpoint_callback = pl.callbacks.ModelCheckpoint( 
         filename="{epoch}-{loss_train:.2f}-{loss_val:.2f}-{ade1_val:.2f}-{fde1_val:.2f}-{ade_val:.2f}-{fde_val:.2f}",
         monitor="loss_val",
-        save_top_k=-1,
+        save_top_k=4
+        # save_top_k=-1,
     )
-
-    log_dir = os.path.join(BASE_DIR,
-                            "save_models",
-                            args.feature_dir+"/")
-
-    args.log_dir = log_dir
+    
+    ## TODO EarlyStopping (in this case, after reaching a minimum Learning Rate)
+    
+    # Logger
+    
+    LOG_DIR = os.path.join(args.BASE_DIR,
+                           "save_models",
+                           args.feature_dir+"/")
+    wandb.init(project="CGHFormer_trainings",
+               dir=LOG_DIR,
+               name=args.
+               save_code=True)
+    wandb_logger = WandbLogger(save_dir=LOG_DIR)
+    args.LOG_DIR = LOG_DIR
     
     model = TMFModel(args)
 
@@ -105,22 +132,23 @@ def main():
     #                             4 - Horovod 
     
     # [['0'],['1'],etc.] -> [0,1,etc.]
-
+    pdb.set_trace()
     args.devices = [int(device[0]) for device in args.devices]
-
+    bb = [int(device[0]) for device in args.devices]
+    pdb.set_trace()
     trainer = pl.Trainer(
-        default_root_dir=log_dir,
+        default_root_dir=LOG_DIR,
+        logger=wandb_logger,
         callbacks=[checkpoint_callback],
         devices=args.devices,
         accelerator="cuda",
         strategy="ddp", # https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
-        #gradient_clip_val=1.1, 
-        #gradient_clip_algorithm="value",
+        # gradient_clip_val=1.1, 
+        # gradient_clip_algorithm="value",
         max_epochs=args.num_epochs, # 
-        check_val_every_n_epoch=args.check_val_every_n_epoch
+        # check_val_every_n_epoch=args.check_val_every_n_epoch
         # detect_anomaly=True
     )
-    
     
     # # Run learning rate finder (does not support ddp)
     # trainer_simple = pl.Trainer()

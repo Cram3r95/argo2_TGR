@@ -126,6 +126,11 @@ python3 train_TGR.py --use_preprocessed=True # for using the offline preprocessi
 
 To check the metrics during training:
 
+1. If using the default Lightning logger (Tensorboard) or specifically Tensorboard:
+```cd ~/CGHFormer/save_models && python -m tensorboard.main --logdir . --port=6100```
+
+2. If using Wandb (first you must create an account and have installed wandb):
+```pip install wandb```
 ```cd ~/CGHFormer/save_models && python -m tensorboard.main --logdir . --port=6100```
 
 ## Testing
