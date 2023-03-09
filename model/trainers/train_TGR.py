@@ -19,11 +19,11 @@ https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
            
 python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 6,7 \
+                    --devices 0 \
                     --final_latent_info "fuse" \
                     --freeze_decoder True \
                     --decoder "decoder_residual" \
-                    --feature_dir "test_wandb" \
+                    --feature_dir "exp2" \
  
 """
 
@@ -67,13 +67,14 @@ parser = TMFModel.init_args(parser,BASE_DIR,DATASET_DIR)
 parser.add_argument("--ckpt_path", type=str, default="no_model_ckpt")
 parser.add_argument("--decoder", type=str, default="decoder_residual", required=True)
 parser.add_argument("--feature_dir", type=str, default="non_specified", required=True)
-parser.add_argument("--devices", type=list, nargs='+', default=[0,1], required=True)
+parser.add_argument("--devices", type=list, default=[0], required=True)
 
-logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
-
+# logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
+  
 def main():
     args = parser.parse_args()
     args.MODEL_DIR = MODEL_DIR
+    args.devices = [int(device) for device in args.devices if device.isnumeric()] # ['0',[','],['1'],etc.] -> [0,1,etc.]
     
     # Initialize train and val dataloaders
     
@@ -104,22 +105,36 @@ def main():
     ## Every metric logged with log() or log_dict() in LightningModule is a candidate for the monitor key.
     
     checkpoint_callback = pl.callbacks.ModelCheckpoint( 
+        # If it is not specified, dirpath (the folder where we are going to save the checkpoints) matches
+        # the default_root_dir variable of the pl.Trainer (see below)
         filename="{epoch}-{loss_train:.2f}-{loss_val:.2f}-{ade1_val:.2f}-{fde1_val:.2f}-{ade_val:.2f}-{fde_val:.2f}",
         monitor="loss_val",
-        save_top_k=4
-        # save_top_k=-1,
+        save_top_k=-1
     )
     
-    ## TODO EarlyStopping (in this case, after reaching a minimum Learning Rate)
+    ## EarlyStopping (in this case, after reaching a minimum Learning Rate)
+    
+    early_stop_callback = pl.callbacks.EarlyStopping(monitor="lr", 
+                                                     patience=5, 
+                                                     divergence_threshold=args.min_lr_conf,
+                                                     verbose=False, 
+                                                     mode="min")
     
     # Logger
-    
+
     LOG_DIR = os.path.join(args.BASE_DIR,
-                           "save_models",
+                           DATASET_DIR,
+                           "save_models/wandb",
                            args.feature_dir+"/")
-    wandb.init(project="CGHFormer_trainings",
+    
+    if not os.path.exists(LOG_DIR):
+        print("Create exp folder: ", LOG_DIR)
+        os.makedirs(LOG_DIR) # makedirs creates intermediate folders
+   
+    wandb.init(project="CGHFormer_lightning_trainings",
                dir=LOG_DIR,
-               name=args.
+               name=args.feature_dir,
+               group="ddp" if len(args.devices)>1 else None, # all runs for the experiment in one group
                save_code=True)
     wandb_logger = WandbLogger(save_dir=LOG_DIR)
     args.LOG_DIR = LOG_DIR
@@ -130,22 +145,18 @@ def main():
     #                             2 - nn.DataParallel
     #                             3 - nn.DistributedDataParallel 
     #                             4 - Horovod 
-    
-    # [['0'],['1'],etc.] -> [0,1,etc.]
-    pdb.set_trace()
-    args.devices = [int(device[0]) for device in args.devices]
-    bb = [int(device[0]) for device in args.devices]
-    pdb.set_trace()
+
     trainer = pl.Trainer(
         default_root_dir=LOG_DIR,
         logger=wandb_logger,
+        # callbacks=[checkpoint_callback,early_stop_callback],
         callbacks=[checkpoint_callback],
         devices=args.devices,
         accelerator="cuda",
-        strategy="ddp", # https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
+        strategy="ddp" if len(args.devices)>1 else None, # https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
         # gradient_clip_val=1.1, 
         # gradient_clip_algorithm="value",
-        max_epochs=args.num_epochs, # 
+        max_epochs=args.num_epochs, 
         # check_val_every_n_epoch=args.check_val_every_n_epoch
         # detect_anomaly=True
     )
