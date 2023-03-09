@@ -16,17 +16,15 @@ https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
 # In summary
 # e.g. --devices 0 to specifically use GPU 0 # Single-GPU
 # e.g. --devices 6,7 to specifically use GPU 6 and 7 # Multi-GPU
-           
+
 python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 0 \
+                    --devices 2 \
                     --final_latent_info "fuse" \
-                    --freeze_decoder True \
                     --decoder "decoder_residual" \
-                    --feature_dir "exp2" \
- 
+                    --feature_dir "exp5"
 """
-
+# --freeze_decoder True \
 # General purpose imports
 
 import sys
@@ -58,6 +56,7 @@ MODEL_DIR = "model/models"
 from data.argoverse.argo_csv_dataset import ArgoCSVDataset
 from data.argoverse.utils.torch_utils import collate_fn_dict
 from model.models.TFMF_TGR import TMFModel
+# from model.models.TFMF_TGR_ganet import TMFModel
 
 # Make newly created directories readable, writable and descendible for everyone (chmod 777)
 os.umask(0)

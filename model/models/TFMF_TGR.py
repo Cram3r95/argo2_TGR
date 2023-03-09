@@ -92,8 +92,12 @@ class TMFModel(pl.LightningModule):
         # Metrics
         
         self.reg_loss = nn.SmoothL1Loss(reduction="none")
-        self.initial_lr = self.args.initial_lr_conf
-        self.min_lr = self.args.min_lr_conf
+        if self.args.freeze_decoder:
+            self.initial_lr_conf = self.args.initial_lr_conf
+            self.min_lr_conf = self.args.min_lr_conf
+        else:
+            self.initial_lr_conf = 1e-3
+            self.min_lr_conf = 1e-6
         
         self.is_frozen = False
         self.save_model_script = True
@@ -148,12 +152,12 @@ class TMFModel(pl.LightningModule):
         parser_training.add_argument("--num_epochs", type=int, default=200)
         parser_training.add_argument("--check_val_every_n_epoch", type=int, default=10)
         parser_training.add_argument("--lr_values", type=list, default=[1e-3, 1e-4, 1e-3 , 1e-4])
-        parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 30])
-        parser_training.add_argument("--initial_lr_conf", type=float, default=0.25e-4)
-        parser_training.add_argument("--min_lr_conf", type=float, default=5e-6)
-        parser_training.add_argument("--wd", type=float, default=0.01)
-        parser_training.add_argument("--batch_size", type=int, default=32)
-        parser_training.add_argument("--val_batch_size", type=int, default=32)
+        parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 45])
+        parser_training.add_argument("--initial_lr_conf", type=float, default=5e-5)
+        parser_training.add_argument("--min_lr_conf", type=float, default=1e-6)
+        parser_training.add_argument("--wd", type=float, default=0.001)
+        parser_training.add_argument("--batch_size", type=int, default=128)
+        parser_training.add_argument("--val_batch_size", type=int, default=128)
         parser_training.add_argument("--workers", type=int, default=0) # TODO: Not working with >= 0
         parser_training.add_argument("--val_workers", type=int, default=0)
         parser_training.add_argument("--gpus", type=int, default=1)
@@ -167,7 +171,7 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--num_centerlines", type=int, default=6)
         parser_model.add_argument("--num_attention_heads", type=int, default=8)
         parser_model.add_argument("--apply_dropout", type=float, default=0.2)
-        parser_model.add_argument("--data_aug_gaussian_noise", type=float, default=0.05)
+        parser_model.add_argument("--data_aug_gaussian_noise", type=float, default=0.01)
         parser_model.add_argument("--social_latent_size", type=int, default=64)
         parser_model.add_argument("--map_latent_size", type=int, default=64)
         parser_model.add_argument("--final_latent_info", type=str, default="non_specified")
@@ -177,10 +181,10 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--freeze_decoder", type=bool, default=False)
         parser_model.add_argument("--mod_steps", type=list, default=[1, 5]) # First unimodal -> Freeze -> Multimodal
         parser_model.add_argument("--mod_freeze_epoch", type=int, default=20)
-        parser_model.add_argument("--mod_full_unfreeze_epoch", type=int, default=40)
+        parser_model.add_argument("--mod_full_unfreeze_epoch", type=int, default=60)
         parser_model.add_argument("--reg_loss_weight", type=float, default=1) # xy predictions
         parser_model.add_argument("--cls_loss_weight", type=float, default=1) # classification = confidences
-        parser_model.add_argument("--epsilon", type=float, default=0.0001)
+        parser_model.add_argument("--epsilon", type=float, default=0.0000001)
 
         return parent_parser
 
@@ -584,13 +588,13 @@ class TMFModel(pl.LightningModule):
         else:
             optimizer = torch.optim.AdamW(self.parameters(), 
                                           weight_decay=self.args.wd,
-                                          lr=self.initial_lr)
+                                          lr=self.initial_lr_conf)
                 
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                                    mode='min',
                                                                    factor=0.5,
                                                                    patience=5,
-                                                                   min_lr=1e-6,
+                                                                   min_lr=self.min_lr_conf,
                                                                    verbose=True)
 
             return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "ade_val"}
@@ -725,7 +729,8 @@ class EncoderTransformer(nn.Module):
         self.args = args
 
         self.d_model = self.args.social_latent_size # embedding dimension
-        self.nhead =self.args.num_attention_heads # TODO: Is this correct?
+        # self.nhead = self.args.num_attention_heads # TODO: Is this correct?
+        self.nhead = self.args.social_latent_size
         self.d_hid = 1 ## dimension of the feedforward network model in nn.TransformerEncoder
         self.num_layers = 1
         self.dropout = self.args.apply_dropout
@@ -853,7 +858,7 @@ class DecoderResidual(nn.Module):
                
             decoder_out = torch.stack(sample_wise_out)
             decoder_out = torch.swapaxes(decoder_out, 0, 1)
-            pdb.set_trace()
+
             latent_predictions = self.latent_predictions(decoder_out.contiguous().view(batch_size,-1))
             conf_latent = torch.cat([decoder_in,
                                      latent_predictions],
