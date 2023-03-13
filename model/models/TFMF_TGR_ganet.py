@@ -368,7 +368,6 @@ def pred_metrics(preds, gt_preds, has_preds_, preds_cls):
     
     row_idcs_last = np.arange(len(last_idcs)).astype(np.int64) 
     ade1 =  np.asarray([err[i, 0, :last_idcs[i]].mean() for i in range(m)]).mean()
-    pdb.set_trace()
     fde1 = err[row_idcs_last, 0, last_idcs].mean()
     #cls = softmax(cls, axis=1)
     min_idcs = err[row_idcs_last, :, last_idcs].argmin(1)
@@ -379,7 +378,7 @@ def pred_metrics(preds, gt_preds, has_preds_, preds_cls):
     fde = err[row_idcs_last, last_idcs].mean()
     one_arr = np.ones(m)
     brier_fde = (err[row_idcs_last, last_idcs] + (one_arr-cls)**2).mean()
-    
+
     return ade1, fde1, ade, fde, brier_fde, min_idcs
 
 # Aux functions and layers
