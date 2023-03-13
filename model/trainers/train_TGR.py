@@ -19,10 +19,10 @@ https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
 
 python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 2 \
+                    --devices 0 \
                     --final_latent_info "fuse" \
                     --decoder "decoder_residual" \
-                    --feature_dir "exp5"
+                    --exp_name "exp1_ganet"
 """
 # --freeze_decoder True \
 # General purpose imports
@@ -55,8 +55,8 @@ MODEL_DIR = "model/models"
 
 from data.argoverse.argo_csv_dataset import ArgoCSVDataset
 from data.argoverse.utils.torch_utils import collate_fn_dict
-from model.models.TFMF_TGR import TMFModel
-# from model.models.TFMF_TGR_ganet import TMFModel
+# from model.models.TFMF_TGR import TMFModel
+from model.models.TFMF_TGR_ganet import TMFModel
 
 # Make newly created directories readable, writable and descendible for everyone (chmod 777)
 os.umask(0)
@@ -65,7 +65,7 @@ parser = argparse.ArgumentParser()
 parser = TMFModel.init_args(parser,BASE_DIR,DATASET_DIR)
 parser.add_argument("--ckpt_path", type=str, default="no_model_ckpt")
 parser.add_argument("--decoder", type=str, default="decoder_residual", required=True)
-parser.add_argument("--feature_dir", type=str, default="non_specified", required=True)
+parser.add_argument("--exp_name", type=str, default="non_specified", required=True)
 parser.add_argument("--devices", type=list, default=[0], required=True)
 
 # logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
@@ -124,7 +124,7 @@ def main():
     LOG_DIR = os.path.join(args.BASE_DIR,
                            DATASET_DIR,
                            "save_models/wandb",
-                           args.feature_dir+"/")
+                           args.exp_name+"/")
     
     if not os.path.exists(LOG_DIR):
         print("Create exp folder: ", LOG_DIR)
@@ -132,8 +132,8 @@ def main():
    
     wandb.init(project="CGHFormer_lightning_trainings",
                dir=LOG_DIR,
-               name=args.feature_dir,
-               group="ddp" if len(args.devices)>1 else None, # all runs for the experiment in one group
+               name=args.exp_name,
+               #group=args.exp_name, # all runs for the experiment in one group
                save_code=True)
     wandb_logger = WandbLogger(save_dir=LOG_DIR)
     args.LOG_DIR = LOG_DIR
@@ -153,8 +153,8 @@ def main():
         devices=args.devices,
         accelerator="cuda",
         strategy="ddp" if len(args.devices)>1 else None, # https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
-        # gradient_clip_val=1.1, 
-        # gradient_clip_algorithm="value",
+        gradient_clip_val=1.1, 
+        gradient_clip_algorithm="value",
         max_epochs=args.num_epochs, 
         # check_val_every_n_epoch=args.check_val_every_n_epoch
         # detect_anomaly=True
