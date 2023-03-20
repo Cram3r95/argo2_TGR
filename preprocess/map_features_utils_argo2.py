@@ -45,15 +45,16 @@ sys.path.append(BASE_DIR)
 
 ## Argoverse 1
 
+from argoverse.utils.geometry import point_inside_polygon
 from argoverse.map_representation.map_api import ArgoverseMap
 from argoverse.utils.centerline_utils import (
     centerline_to_polygon,
-    remove_overlapping_lane_seq,
+    filter_candidate_centerlines,
+    get_centerlines_most_aligned_with_trajectory,
+    remove_overlapping_lane_seq
 )
 from argoverse.utils.manhattan_search import (
-    compute_polygon_bboxes,
-    find_all_polygon_bboxes_overlapping_query_bbox,
-    find_local_polygons,
+    find_all_polygon_bboxes_overlapping_query_bbox
 )
 from argoverse.utils.mpl_plotting_utils import visualize_centerline
 
@@ -83,7 +84,6 @@ class MapFeaturesUtils:
         Args:
             lane_seq: Sequence of lane ids
             xy_seq: Trajectory coordinates
-            city_name: City name (PITT/MIA)
             avm: Argoverse map_api instance
         Returns:
             point_in_polygon_score: Number of coordinates in the trajectory that lie within the
@@ -110,7 +110,7 @@ class MapFeaturesUtils:
         Args:
             lane_seqs: Sequence of lane sequences
             xy_seq: Trajectory coordinates
-            city_name: City name (PITT/MIA)
+            map_json:
             avm: Argoverse map_api instance
         Returns:
             sorted_lane_seqs: Sequences of lane sequences sorted based on the point_in_polygon score
@@ -195,7 +195,7 @@ class MapFeaturesUtils:
             diverse_centerlines = [
                 diverse_centerlines[i] for i in diverse_centerlines_idx
             ]
-            pdb.set_trace()
+
             test_centerlines += diverse_centerlines
 
         return test_centerlines
@@ -210,16 +210,17 @@ class MapFeaturesUtils:
             max_search_radius: float = 50.0,
             max_candidates: int = 10,
             mode: str = "test",
+            algorithm: str = "map_api",
             time_variables: list = [50,60,10], # obs_len, pred_len, frequency
             min_dist_around: float = 15,
-            normalize_rotation: bool = False,
+            normalize_rotation: str = "not_apply",
             interpolate_centerline_points: int = 0,
             relative_displacements: bool = False,
             debug: bool = True
     ) -> List[np.ndarray]:
         """Get centerline candidates upto a threshold.
 
-        Algorithm:
+        General algorithm:
         1. Take the lanes in the bubble of last observed coordinate
         2. Extend before and after considering all possible candidates
         3. Get centerlines based on point in polygon score.
@@ -262,7 +263,7 @@ class MapFeaturesUtils:
         ## Compute agent's orientation in the last observation frame
 
         lane_dir_vector, yaw = get_yaw(xy_filtered, obs_len)
-        
+        print("yaw: ", yaw)
         ## Estimate travelled distance
         
         dist_around = vel * (pred_len / frequency) + 1/2 * acc * (pred_len / frequency)**2
@@ -288,107 +289,223 @@ class MapFeaturesUtils:
         # reference_point = extended_xy_filtered[index_max_dist,:] # Reference point assuming naive prediction
         reference_point = extended_xy_filtered[obs_len-1,:] # Reference point assuming last observation
         
-        # 2. Get all lane candidates within a bubble
+        # 2. Get centerlines using the corresponding algorithm
         
-        curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
-            xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
-
-        # 3. Keep expanding the bubble until at least 1 lane is found
-        
-        while (len(curr_lane_candidates) < 1
-               and self._MANHATTAN_THRESHOLD < max_search_radius):
-            self._MANHATTAN_THRESHOLD *= 2
+        if algorithm == "competition":
+            # Get all lane candidates within a bubble
+            
             curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
-                xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
-        try:
-            assert len(curr_lane_candidates) > 0, "No nearby lanes found!!"
-        except:
+                xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+
+            # Keep expanding the bubble until at least 1 lane is found
+            
             while (len(curr_lane_candidates) < 1
-                and self._MANHATTAN_THRESHOLD < max_search_radius*100):
+                and self._MANHATTAN_THRESHOLD < max_search_radius):
                 self._MANHATTAN_THRESHOLD *= 2
                 curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
-                    xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
+                    xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+                
             try:
-                assert (len(curr_lane_candidates) > 0)
+                assert len(curr_lane_candidates) > 0, "No nearby lanes found!!"
             except:
-                while (len(curr_lane_candidates) < 1 and self._MANHATTAN_THRESHOLD < max_search_radius*500):
+                while (len(curr_lane_candidates) < 1
+                    and self._MANHATTAN_THRESHOLD < max_search_radius*100):
                     self._MANHATTAN_THRESHOLD *= 2
                     curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
-                        xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
-        assert (len(curr_lane_candidates) > 0)
-        
-        # 4. Set dfs threshold
-        
-        # dfs_threshold_front = 150.0
-        # dfs_threshold_back = 150.0
-        dfs_threshold_front = dfs_threshold_back = dist_around
-
-        # 5. DFS to get all successor and predecessor candidates
-        
-        obs_pred_lanes = [] # NOQA
-        for lane in curr_lane_candidates:
-            candidates_future = map_json.dfs(lane, 0,
-                                        dfs_threshold_front)
-            candidates_past = map_json.dfs(lane, 0, dfs_threshold_back,
-                                      True)
-
-            # Merge past and future
-            for past_lane_seq in candidates_past:
-                for future_lane_seq in candidates_future:
-                    assert (
-                        past_lane_seq[-1] == future_lane_seq[0]
-                    ), "Incorrect DFS for candidate lanes past and future"
-                    obs_pred_lanes.append(past_lane_seq + future_lane_seq[1:])
-                    
-        # 6. Removing overlapping lanes
-        
-        obs_pred_lanes = remove_overlapping_lane_seq(obs_pred_lanes)
-        
-        # 7. Sort lanes based on point in polygon score
-        
-        obs_pred_lanes, scores = self.sort_lanes_based_on_point_in_polygon_score(
-            obs_pred_lanes, xy, map_json, avm)
-
-        # 8. If the best centerline is not along the direction of travel, re-sort
-
-        if mode == "test":
-            candidate_centerlines = self.get_heuristic_centerlines_for_test_set(
-                obs_pred_lanes, xy, map_json, avm, max_candidates, scores)
-        else:
-            candidate_centerlines = map_json.get_cl_from_lane_seq(
-                [obs_pred_lanes[0]])
-
-        # 9. (Optional) Sort centerlines based on the distance to a reference point, usually the last observation
-
-        distances = []
-        for centerline in candidate_centerlines:
-            distances.append(min(np.linalg.norm((centerline - reference_point),axis=1)))
-        
-        # If we want to filter those lanes with the same distance to reference point
-        # TODO: Is this hypothesis correct?
-        
-        # unique_distances = list(set(distances))
-        # unique_distances.sort()
-        # unique_distances = unique_distances[:max_candidates]
-
-        # # print("unique distances: ", unique_distances)
-        # final_indeces = [np.where(distances == unique_distance)[0][0] for unique_distance in unique_distances]
-
-        # final_candidates = []
-        # for index in final_indeces:
-        #     final_candidates.append(candidate_centerlines[index])
-
-        sorted_indeces = np.argsort(distances)
-        final_candidates = []
-        for index in sorted_indeces:
-            final_candidates.append(candidate_centerlines[index])
+                        xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+                try:
+                    assert (len(curr_lane_candidates) > 0)
+                except:
+                    while (len(curr_lane_candidates) < 1 and self._MANHATTAN_THRESHOLD < max_search_radius*500):
+                        self._MANHATTAN_THRESHOLD *= 2
+                        curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                            xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+            assert (len(curr_lane_candidates) > 0)
             
-        candidate_centerlines = final_candidates
+            # Set dfs threshold
+            
+            # dfs_threshold_front = 150.0
+            # dfs_threshold_back = 150.0
+            dfs_threshold_front = dfs_threshold_back = dist_around
 
-        # 10. (Optional) Rotate centerlines w.r.t. focal agent last observation frame
+            # DFS to get all successor and predecessor candidates
+            
+            obs_pred_lanes = [] # NOQA
+            for lane in curr_lane_candidates:
+                candidates_future = map_json.dfs(lane, 0,
+                                            dfs_threshold_front)
+                candidates_past = map_json.dfs(lane, 0, dfs_threshold_back,
+                                        True)
+
+                # Merge past and future
+                for past_lane_seq in candidates_past:
+                    for future_lane_seq in candidates_future:
+                        assert (
+                            past_lane_seq[-1] == future_lane_seq[0]
+                        ), "Incorrect DFS for candidate lanes past and future"
+                        obs_pred_lanes.append(past_lane_seq + future_lane_seq[1:])
+                        
+            # Removing overlapping lanes
+            
+            obs_pred_lanes = remove_overlapping_lane_seq(obs_pred_lanes)
+            
+            # Sort lanes based on point in polygon score
+            
+            obs_pred_lanes, scores = self.sort_lanes_based_on_point_in_polygon_score(
+                obs_pred_lanes, xy_filtered, map_json, avm)
+
+            # If the best centerline is not along the direction of travel, re-sort
+
+            if mode == "test":
+                candidate_centerlines = self.get_heuristic_centerlines_for_test_set(
+                    obs_pred_lanes, xy_filtered, map_json, avm, max_candidates, scores)
+            else:
+                candidate_centerlines = map_json.get_cl_from_lane_seq(
+                    [obs_pred_lanes[0]])
+
+            # (Optional) Sort centerlines based on the distance to a reference point, usually the last observation
+
+            distances = []
+            for centerline in candidate_centerlines:
+                distances.append(min(np.linalg.norm((centerline - reference_point),axis=1)))
         
-        if normalize_rotation:
-            yaw_aux = - (math.pi/2 - yaw) # Apply this angle to align the trajectory with the Y-axis
+            # If we want to filter those lanes with the same distance to reference point
+            # TODO: Is this hypothesis correct?
+            
+            # unique_distances = list(set(distances))
+            # unique_distances.sort()
+            # unique_distances = unique_distances[:max_candidates]
+
+            # # print("unique distances: ", unique_distances)
+            # final_indeces = [np.where(distances == unique_distance)[0][0] for unique_distance in unique_distances]
+
+            # final_candidates = []
+            # for index in final_indeces:
+            #     final_candidates.append(candidate_centerlines[index])
+
+            sorted_indeces = np.argsort(distances)
+            final_candidates = []
+            for index in sorted_indeces:
+                final_candidates.append(candidate_centerlines[index])
+                
+            candidate_centerlines = final_candidates
+            
+        elif algorithm == "map_api": 
+        # Compute centerlines using Argoverse Map API
+
+            # Get all lane candidates within a bubble
+            
+            curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
+
+            # Keep expanding the bubble until at least 1 lane is found
+            
+            while (len(curr_lane_candidates) < 1
+                and self._MANHATTAN_THRESHOLD < max_search_radius):
+                self._MANHATTAN_THRESHOLD *= 2
+                curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                    xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+                
+            try:
+                assert len(curr_lane_candidates) > 0, "No nearby lanes found!!"
+            except:
+                while (len(curr_lane_candidates) < 1
+                    and self._MANHATTAN_THRESHOLD < max_search_radius*100):
+                    self._MANHATTAN_THRESHOLD *= 2
+                    curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                        xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+                try:
+                    assert (len(curr_lane_candidates) > 0)
+                except:
+                    while (len(curr_lane_candidates) < 1 and self._MANHATTAN_THRESHOLD < max_search_radius*500):
+                        self._MANHATTAN_THRESHOLD *= 2
+                        curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                            xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+            assert (len(curr_lane_candidates) > 0)
+
+            # displacement = np.sqrt((xy[0, 0] - xy[obs_len-1, 0]) ** 2 + (xy[0, 1] - xy[obs_len-1, 1]) ** 2)
+            # dfs_threshold = displacement * 2.0
+            # dfs_threshold_front = dfs_threshold_back = dfs_threshold
+                
+            dfs_threshold_front = dist_around
+            dfs_threshold_back = dist_around
+
+            # DFS to get all successor and predecessor candidates
+            
+            obs_pred_lanes = [] # NOQA
+            for lane in curr_lane_candidates:
+                candidates_future = map_json.dfs(lane, 0,
+                                            dfs_threshold_front)
+                candidates_past = map_json.dfs(lane, 0, dfs_threshold_back,
+                                        True)
+
+                # Merge past and future
+                for past_lane_seq in candidates_past:
+                    for future_lane_seq in candidates_future:
+                        assert past_lane_seq[-1] == future_lane_seq[0], "Incorrect DFS for candidate lanes past and future"
+                        obs_pred_lanes.append(past_lane_seq + future_lane_seq[1:])
+
+            # Removing overlapping lanes
+            
+            obs_pred_lanes = remove_overlapping_lane_seq(obs_pred_lanes)
+
+            # Remove unnecessary extended predecessors
+            
+            obs_pred_lanes = map_json.remove_extended_predecessors(obs_pred_lanes, xy_filtered)
+
+            # Getting candidate centerlines
+            
+            candidate_cl = map_json.get_cl_from_lane_seq(obs_pred_lanes)
+
+            # Reduce the number of candidates based on distance travelled along the centerline
+            
+            candidate_centerlines = filter_candidate_centerlines(xy_filtered, candidate_cl)
+
+            # If no candidate found using above criteria, take the onces along with travel is the maximum
+            if len(candidate_centerlines) < 1:
+                candidate_centerlines = get_centerlines_most_aligned_with_trajectory(xy_filtered, candidate_cl)
+
+            ## Additional ##
+
+            # Sort centerlines based on the distance to a reference point, usually the last observation
+
+            distances = []
+            for centerline in candidate_centerlines:
+                distances.append(min(np.linalg.norm((centerline - reference_point),axis=1)))
+            
+            AVOID_SAME_MIN_DISTANCES = True
+            
+            if AVOID_SAME_MIN_DISTANCES:
+                # Avoid repeating centerlines with the same min distance
+                
+                unique_distances = list(set(distances))
+                unique_distances.sort()
+                unique_distances = unique_distances[:max_candidates]
+
+                final_indeces = [np.where(distances == unique_distance)[0][0] for unique_distance in unique_distances]
+
+                final_candidates = []
+                for index in final_indeces:
+                    final_candidates.append(candidate_centerlines[index])
+            else:
+                sorted_indeces = np.argsort(distances)
+                sorted_indeces = sorted_indeces[:max_candidates]
+                final_candidates = []
+                for index in sorted_indeces:
+                    final_candidates.append(candidate_centerlines[index])
+
+            candidate_centerlines = final_candidates
+            
+        # 3. (Optional) Rotate centerlines w.r.t. focal agent last observation frame
+        
+        if normalize_rotation != "not_apply":
+            if normalize_rotation == "x-axis":
+                yaw_aux = yaw
+            elif normalize_rotation == "y-axis":
+                yaw_aux = - (math.pi/2 - yaw)
+            else:
+                pdb.set_trace()
+                
             R = rotz2D(yaw_aux)
             xy = apply_rotation(xy,R)
             full_xy = apply_rotation(full_xy,R)
@@ -396,27 +513,33 @@ class MapFeaturesUtils:
             candidate_centerlines_aux = []
             for candidate_centerline in candidate_centerlines:
                 candidate_centerline_aux = apply_rotation(candidate_centerline,R)
-                
-                if interpolate_centerline_points > 0:
-                    candidate_centerline_aux = centerline_interpolation(candidate_centerline_aux,
-                                                                        interp_points=interpolate_centerline_points)
-  
+                candidate_centerlines_aux.append(candidate_centerline_aux)
+            candidate_centerlines = candidate_centerlines_aux
+        
+        # 4. Interpolate centerlines
+
+        if interpolate_centerline_points > 0:
+            candidate_centerlines_aux = []
+            for candidate_centerline in candidate_centerlines:
+                candidate_centerline_aux = centerline_interpolation(candidate_centerline,
+                                                                    interp_points=interpolate_centerline_points)
+
                 # Do not store the centerline if could not be interpolated
                 if type(candidate_centerline_aux) is np.ndarray:
                     candidate_centerlines_aux.append(candidate_centerline_aux)
+            candidate_centerlines = candidate_centerlines_aux 
         
-            candidate_centerlines = candidate_centerlines_aux
-        
-        # 11. (Optional) Get relative displacements
+        # 5. (Optional) Get relative displacements
 
         rel_candidate_centerlines_array = np.array(candidate_centerlines)
+        
         if relative_displacements:
             candidate_centerlines_array = np.array(candidate_centerlines)
 
             rel_candidate_centerlines_array = np.zeros(candidate_centerlines_array.shape) 
             rel_candidate_centerlines_array[:, 1:, :] = candidate_centerlines_array[:, 1:, :] - candidate_centerlines_array[:, :-1, :] # Get displacements between consecutive steps
         
-        # 12. Pad centerlines with zeros
+        # 5. Pad centerlines with zeros
         
         pad_centerlines = True
         if pad_centerlines:
@@ -491,7 +614,7 @@ class MapFeaturesUtils:
             plt.ylabel("Map Y")
             plt.axis("off")
             plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-            
+            print("filename: ", filename)
             plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
 
             plt.close('all')
@@ -591,7 +714,6 @@ class ScenarioMap:
         Args:
             query_x: representing x coordinate of xy query location
             query_y: representing y coordinate of xy query location
-            city_name: either 'MIA' for Miami or 'PIT' for Pittsburgh
             query_search_range_manhattan: search radius along axes
         Returns:
             lane_ids: lane segment IDs that live within a bubble
@@ -621,7 +743,6 @@ class ScenarioMap:
         Get land id for the lane predecessor of the specified lane_segment_id
         Args:
             lane_segment_id: unique identifier for a lane segment within a city
-            city_name: either 'MIA' for Miami or 'PIT' for Pittsburgh
         Returns:
             predecessor_ids: list of integers, representing lane segment IDs of predecessors
         """
@@ -633,7 +754,6 @@ class ScenarioMap:
         Get land id for the lane sucessor of the specified lane_segment_id
         Args:
             lane_segment_id: unique identifier for a lane segment within a city
-            city_name: either 'MIA' or 'PIT' for Miami or Pittsburgh
         Returns:
             successor_ids: list of integers, representing lane segment IDs of successors
         """
@@ -661,7 +781,6 @@ class ScenarioMap:
         rasterized maps to provide heights to points in the xy plane.
         Args:
             lane_segment_id: unique identifier for a lane segment within a city
-            city_name: either 'MIA' or 'PIT' for Miami or Pittsburgh
         Returns:
             lane_polygon: Array of polygon boundary (K,3), with identical and last boundary points
         """
@@ -669,11 +788,66 @@ class ScenarioMap:
         lane_polygon = centerline_to_polygon(lane_centerline[:, :2])
         return np.hstack([lane_polygon, np.zeros(lane_polygon.shape[0])[:, np.newaxis] + np.mean(lane_centerline[:, 2])])
 
+    def get_lane_segments_containing_xy(self, query_x: float, query_y: float) -> List[int]:
+        """
+
+        Get the occupied lane ids, i.e. given (x,y), list those lane IDs whose hallucinated
+        lane polygon contains this (x,y) query point.
+
+        This function performs a "point-in-polygon" test.
+
+        Args:
+            query_x: representing x coordinate of xy query location
+            query_y: representing y coordinate of xy query location
+        Returns:
+            occupied_lane_ids: list of integers, representing lane segment IDs containing (x,y)
+        """
+        neighborhood_lane_ids = self.get_lane_ids_in_xy_bbox(query_x, query_y)
+
+        occupied_lane_ids: List[int] = []
+        if neighborhood_lane_ids is not None:
+            for lane_id in neighborhood_lane_ids:
+                lane_polygon = self.get_lane_segment_polygon(lane_id)
+                inside = point_inside_polygon(
+                    lane_polygon.shape[0],
+                    lane_polygon[:, 0],
+                    lane_polygon[:, 1],
+                    query_x,
+                    query_y,
+                )
+                if inside:
+                    occupied_lane_ids += [lane_id]
+        return occupied_lane_ids
+    
+    def remove_extended_predecessors(
+        self, lane_seqs: List[List[int]], xy: np.ndarray
+    ) -> List[List[int]]:
+        """
+        Remove lane_ids which are obtained by finding way too many predecessors from lane sequences.
+        If any lane id is an occupied lane id for the first coordinate of the trajectory, ignore all the
+        lane ids that occured before that
+
+        Args:
+            lane_seqs: List of list of lane ids (Eg. [[12345, 12346, 12347], [12345, 12348]])
+            xy: trajectory coordinates
+        Returns:
+            filtered_lane_seq (list of list of integers): List of list of lane ids obtained after filtering
+        """
+        filtered_lane_seq = []
+        occupied_lane_ids = self.get_lane_segments_containing_xy(xy[0, 0], xy[0, 1])
+        for lane_seq in lane_seqs:
+            for i in range(len(lane_seq)):
+                if lane_seq[i] in occupied_lane_ids:
+                    new_lane_seq = lane_seq[i:]
+                    break
+                new_lane_seq = lane_seq
+            filtered_lane_seq.append(new_lane_seq)
+        return filtered_lane_seq
+    
     def get_cl_from_lane_seq(self, lane_seqs: Iterable[List[int]]) -> List[np.ndarray]:
         """Get centerlines corresponding to each lane sequence in lane_sequences
         Args:
             lane_seqs: Iterable of sequence of lane ids (Eg. [[12345, 12346, 12347], [12345, 12348]])
-            city_name: either 'MIA' for Miami or 'PIT' for Pittsburgh
         Returns:
             candidate_cl: list of numpy arrays for centerline corresponding to each lane sequence
         """
@@ -698,7 +872,6 @@ class ScenarioMap:
         Perform depth first search over lane graph up to the threshold.
         Args:
             lane_id: Starting lane_id (Eg. 12345)
-            city_name
             dist: Distance of the current path
             threshold: Threshold after which to stop the search
             extend_along_predecessor: if true, dfs over predecessors, else successors

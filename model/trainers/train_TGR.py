@@ -19,10 +19,10 @@ https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
 
 python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 0 \
+                    --devices 3 \
                     --final_latent_info "fuse" \
                     --decoder "decoder_residual" \
-                    --exp_name "exp1_ganet"
+                    --exp_name "exp1_ganet_with_map"
 """
 # --freeze_decoder True \
 # General purpose imports

@@ -50,92 +50,19 @@ torch.set_float32_matmul_precision("medium") # highest, high, medium
 
 #######################################
 
-### config ###
-config = dict()
-"""Train"""
-config["display_iters"] = 200000
-config["val_iters"] = 200000 
-config["save_freq"] = 1.0
-config["epoch"] = 0
-config["horovod"] = False
-config["opt"] = "adam"
-config["num_epochs"] = 50
-config["start_val_epoch"] = 30
-config["lr"] = [1e-3, 1e-4, 5e-5, 1e-5]
-config["lr_epochs"] = [36,42,46]
-config["lr_func"] = StepLR(config["lr"], config["lr_epochs"])
-
-config["batch_size"] = 128
-config["val_batch_size"] = 128
-config["workers"] = 0
-config["val_workers"] = config["workers"]
-
-"""Dataset"""
-# data_path = "/usr/src/app/datasets/motion_forecasting/argoverse2"
-data_path = "/home/robesafe/shared_home/benchmarks/argoverse2/motion-forecasting"
-
-# Raw Dataset
-config["train_split"] = os.path.join(data_path, "train")
-config["val_split"] = os.path.join(data_path, "val")
-config["test_split"] = os.path.join(data_path, "test")
-
-# Preprocessed Dataset
-config["preprocess"] = True # whether use preprocess or not
-config["preprocess_train"] = os.path.join(
-    data_path, "preprocess_c", "train_crs_dist6_angle90.p"
-)
-config["preprocess_val"] = os.path.join(
-    data_path, "preprocess_c", "val_crs_dist6_angle90.p"
-)
-config['preprocess_test'] = os.path.join(data_path, 'preprocess_c', 'test_test.p')
-
-"""Model"""
-config["rot_aug"] = False
-config["pred_range"] = [-100.0, 100.0, -100.0, 100.0]
-config["num_scales"] = 6
-config["n_actor"] = 128 # 128
-config["n_map"] = 128
-config["actor2map_dist"] = 7.0
-config["map2actor_dist"] = 6.0
-config["actor2actor_dist"] = 100.0
-config["pred_size"] = 60
-config["pred_step"] = 1
-config["num_test_mod"] = 3
-config["num_preds"] = config["pred_size"] // config["pred_step"]
-config["num_mods"] = 6
-config["cls_coef"] = 3.0
-config["reg_coef"] = 1.0
-config["end_coef"] = 1.0
-config["test_cls_coef"] = 1.0
-config["test_coef"] = 0.2
-config["test_half_coef"] = 0.1
-config["mgn"] = 0.2
-config["cls_th"] = 2.0
-config["cls_ignore"] = 0.2
-config["use_map"] = False
-### end of config ###
-
 class TMFModel(pl.LightningModule):
     def __init__(self, args):
         super(TMFModel, self).__init__() # allows us to avoid using the base class name explicitly
         self.args = args
-        self.config = config
         
         # Save model in log_dir as backup
 
         self.save_hyperparameters() # It will enable Lightning to store all the provided arguments under the self.hparams attribute. 
                                     # These hyperparameters will also be stored within the model checkpoint, which simplifies model re-instantiation after training.
         
-        # # Metrics
-        
-        # self.reg_loss = nn.SmoothL1Loss(reduction="none")
-        
-        self.config = config
-        self.use_map = config["use_map"]
-        
-        self.actor_net1 = ActorNet(config)
-        # self.actor_net2 = ActorNet(config)
-        self.a2a = A2A(config)
+        self.actor_net1 = ActorNet(self.args)
+        # self.actor_net2 = ActorNet(self.args)
+        self.a2a = A2A(self.args)
         
         self.map_sub_net = MapSubNet(self.args)
         self.A2L_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
@@ -144,9 +71,9 @@ class TMFModel(pl.LightningModule):
         self.A2L_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
         self.L2A_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
         
-        self.pred_net = PredNet(config)
+        self.pred_net = PredNet(self.args)
         
-        self.loss_lane = LossLane(config)
+        self.loss_lane = LossLane(self.args)
         
         self.initial_lr = self.args.initial_lr_conf
         self.min_lr = self.args.min_lr_conf
@@ -221,11 +148,12 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--pred_len", type=int, default=60)
         parser_model.add_argument("--centerline_length", type=int, default=40)
         parser_model.add_argument("--num_centerlines", type=int, default=6)
+        parser_model.add_argument("--actor2actor_dist", type=float, default=100.0)
         parser_model.add_argument("--num_attention_heads", type=int, default=8)
         parser_model.add_argument("--apply_dropout", type=float, default=0.2)
         parser_model.add_argument("--data_aug_gaussian_noise", type=float, default=0.05)
-        parser_model.add_argument("--social_latent_size", type=int, default=128)
-        parser_model.add_argument("--map_latent_size", type=int, default=128)
+        parser_model.add_argument("--social_latent_size", type=int, default=64)
+        parser_model.add_argument("--map_latent_size", type=int, default=64)
         parser_model.add_argument("--final_latent_info", type=str, default="non_specified")
         parser_model.add_argument("--decoder_latent_size", type=int, default=-1)
         parser_model.add_argument("--decoder_temporal_window_size", type=int, default=30) # 49 
@@ -234,9 +162,12 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--mod_steps", type=list, default=[1, 5]) # First unimodal -> Freeze -> Multimodal
         parser_model.add_argument("--mod_freeze_epoch", type=int, default=20)
         parser_model.add_argument("--mod_full_unfreeze_epoch", type=int, default=40)
-        parser_model.add_argument("--reg_loss_weight", type=float, default=1) # xy predictions
-        parser_model.add_argument("--cls_loss_weight", type=float, default=1) # classification = confidences
+        parser_model.add_argument("--reg_loss_weight", type=float, default=3.0) # xy predictions
+        parser_model.add_argument("--cls_loss_weight", type=float, default=1.0) # classification = confidences
         parser_model.add_argument("--epsilon", type=float, default=0.0001)
+        parser_model.add_argument("--mgn", type=float, default=0.2)
+        parser_model.add_argument("--cls_th", type=float, default=2.0)
+        parser_model.add_argument("--cls_ignore", type=float, default=0.2)
 
         return parent_parser
 
@@ -323,7 +254,7 @@ class TMFModel(pl.LightningModule):
             physical_info = self.map_sub_net(rel_candidate_centerlines, rel_candidate_centerlines_mask_) 
         
         social_info = actors[focal_agent_id,:]
-        
+
         physical_info = physical_info + self.A2L_1(physical_info, social_info)
         social_info = social_info + self.L2A_1(social_info, physical_info)
         
@@ -487,9 +418,9 @@ class ActorNet(nn.Module):
     """
     Actor feature extractor with Conv1D
     """
-    def __init__(self, config):
+    def __init__(self, args):
         super(ActorNet, self).__init__()
-        self.config = config
+        self.args = args
         norm = "GN"
         ng = 1
 
@@ -513,17 +444,17 @@ class ActorNet(nn.Module):
             n_in = n_out[i]
         self.groups = nn.ModuleList(groups)
 
-        n = config["n_actor"]
+        self.latent_size = self.args.social_latent_size
         lateral = []
         for i in range(len(n_out)):
-            lateral.append(Conv1d(n_out[i], n, norm=norm, ng=ng, act=False))
+            lateral.append(Conv1d(n_out[i], self.latent_size, norm=norm, ng=ng, act=False))
         self.lateral = nn.ModuleList(lateral)
         
         ctrs_in = 2
-        self.lstm_h0_init_function = nn.Linear(ctrs_in, n, bias=False)
-        self.lstm_encoder = nn.LSTM(n, n, batch_first=True)
+        self.lstm_h0_init_function = nn.Linear(ctrs_in, self.latent_size, bias=False)
+        self.lstm_encoder = nn.LSTM(self.latent_size, self.latent_size, batch_first=True)
         
-        self.output = Res1d(n, n, norm=norm, ng=ng)
+        self.output = Res1d(self.latent_size, self.latent_size, norm=norm, ng=ng)
         
     def forward(self, actors: Tensor, actor_ctrs) -> Tensor:
         actor_ctrs = torch.cat(actor_ctrs, 0)
@@ -548,13 +479,12 @@ class ActorNet(nn.Module):
         out_init = out[:, :, -1]
     
         #1. TODO fuse map data as init hidden and cell state
-        h0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, config["n_actor"])
-        c0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, config["n_actor"])
-        #h0 = torch.zeros(1, M, config["n_actor"]).cuda()
-        #c0 = torch.zeros(1, M, config["n_actor"]).cuda()
+        h0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, self.latent_size)
+        c0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, self.latent_size)
+
         out = out.transpose(1, 2).contiguous()
         output, (hn, cn) = self.lstm_encoder(out, (h0, c0))
-        out_lstm = hn.contiguous().view(M, config["n_actor"])
+        out_lstm = hn.contiguous().view(M, self.latent_size)
         out = out_lstm + out_init
 
         return out
@@ -664,27 +594,28 @@ class PredNet(nn.Module):
     Final motion forecasting with Linear Residual block
     For the student (without map)
     """
-    def __init__(self, config):
+    def __init__(self, args):
         super(PredNet, self).__init__()
-        self.config = config
+        self.args = args
         norm = "GN"
         ng = 1
 
-        n_actor = config["n_actor"]
+        self.latent_size = self.args.social_latent_size
+        self.num_modes = self.args.num_modes
 
         pred = []
-        for i in range(config["num_mods"]):
+        for i in range(self.args.num_modes):
             pred.append(
                 nn.Sequential(
-                    LinearRes(n_actor, n_actor, norm=norm, ng=ng),
-                    nn.Linear(n_actor, 2 * config["num_preds"]),
+                    LinearRes(self.latent_size, self.latent_size, norm=norm, ng=ng),
+                    nn.Linear(self.latent_size, 2 * self.args.pred_len),
                 )
             )
         self.pred = nn.ModuleList(pred)
 
-        self.att_dest = myAttDestNoMap(n_actor, config["num_mods"])
+        self.att_dest = myAttDestNoMap(self.latent_size, self.num_modes)
         self.cls = nn.Sequential(
-            LinearRes(n_actor, n_actor, norm=norm, ng=ng), nn.Linear(n_actor, 1)
+            LinearRes(self.latent_size, self.latent_size, norm=norm, ng=ng), nn.Linear(self.latent_size, 1)
         )
         self.softmax = nn.Softmax(dim=1)
 
@@ -703,7 +634,7 @@ class PredNet(nn.Module):
         dest_ctrs = reg[:, :, -1].detach()
         # feats = self.att_dest(actors, torch.cat(actor_ctrs, 0), dest_ctrs, actor_idcs) 
         feats = self.att_dest(actors, torch.stack(actor_ctrs), dest_ctrs, actor_idcs) 
-        cls = self.cls(feats).view(-1, self.config["num_mods"])
+        cls = self.cls(feats).view(-1, self.num_modes)
         cls = self.softmax(cls)
         
         cls, sort_idcs = cls.sort(1, descending=True)
@@ -763,14 +694,13 @@ class A2A(nn.Module):
     """
     The actor to actor block performs interactions among actors.
     """
-    def __init__(self, config):
+    def __init__(self, args):
         super(A2A, self).__init__()
-        self.config = config
+        self.args = args
         norm = "GN"
         ng = 1
 
-        n_actor = config["n_actor"]
-        n_map = config["n_map"]
+        n_actor = self.args.social_latent_size
 
         att = []
         for i in range(2):
@@ -786,7 +716,7 @@ class A2A(nn.Module):
                 actors,
                 actor_idcs,
                 actor_ctrs,
-                self.config["actor2actor_dist"],
+                self.args.actor2actor_dist,
             )
         return actors
     
@@ -869,9 +799,9 @@ class Att(nn.Module):
         return agts
     
 class PostProcess(nn.Module):
-    def __init__(self, config):
+    def __init__(self, args):
         super(PostProcess, self).__init__()
-        self.config = config
+        self.args = args
 
     def forward(self, out,data):
         post_out = dict()
@@ -955,9 +885,13 @@ def gpu(data):
     return data
 
 class PredLoss(nn.Module):
-    def __init__(self, config):
+    def __init__(self, args):
         super(PredLoss, self).__init__()
-        self.config = config
+        self.args = args
+        
+        self.num_modes = self.args.num_modes
+        self.pred_len = self.args.pred_len
+        
         self.reg_loss = nn.SmoothL1Loss(reduction="sum")
 
     def forward(self, out: Dict[str, List[Tensor]], gt_preds: List[Tensor], has_preds_: List[Tensor]) -> Dict[str, Union[Tensor, int]]:
@@ -981,7 +915,7 @@ class PredLoss(nn.Module):
         loss_out["reg_loss"] = zero.clone()
         loss_out["num_reg"] = 0
 
-        num_mods, num_preds = self.config["num_mods"], self.config["num_preds"]
+        num_mods, num_preds = self.num_modes, self.pred_len
         # assert(has_preds.all())
 
         last = has_preds.float() + 0.1 * torch.arange(num_preds).float().to(
@@ -1012,18 +946,18 @@ class PredLoss(nn.Module):
         row_idcs = torch.arange(len(min_idcs)).long().to(min_idcs.device)
 
         mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
-        mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
-        mask1 = dist - min_dist.view(-1, 1) > self.config["cls_ignore"]
+        mask0 = (min_dist < self.args.cls_th).view(-1, 1)
+        mask1 = dist - min_dist.view(-1, 1) > self.args.cls_ignore
         mgn = mgn[mask0 * mask1]
-        mask = mgn < self.config["mgn"]
-        coef = self.config["cls_coef"]
+        mask = mgn < self.args.mgn
+        coef = self.args.cls_loss_weight
         loss_out["cls_loss"] += coef * (
-            self.config["mgn"] * mask.sum() - mgn[mask].sum()
+            self.args.mgn * mask.sum() - mgn[mask].sum()
         )
         loss_out["num_cls"] += mask.sum().item()
 
         reg = reg[row_idcs, min_idcs]
-        coef = self.config["reg_coef"]
+        coef = self.args.reg_loss_weight
         loss_out["reg_loss"] += coef * self.reg_loss(
             reg[has_preds], gt_preds[has_preds]
         )
@@ -1031,10 +965,10 @@ class PredLoss(nn.Module):
         return loss_out
 
 class LossLane(nn.Module):
-    def __init__(self, config):
+    def __init__(self, args):
         super(LossLane, self).__init__()
-        self.config = config
-        self.pred_loss = PredLoss(config)
+        self.args = args
+        self.pred_loss = PredLoss(args)
 
     def forward(self, out: Dict, data: Dict) -> Dict:
 

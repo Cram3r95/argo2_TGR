@@ -48,16 +48,21 @@ from av2.map.map_api import ArgoverseStaticMap
 
 OBS_LEN = 50
 PRED_LEN = 60
-VIZ = False
+VIZ = True
 limit_qualitative_results = 150
 MODE = "test" # "train","test" 
 # if train -> compute the best candidate (oracle), only using the "competition" algorithm
 # if test, return N plausible candidates. Choose between "competition", "map_api" and "get_around" algorithms
-MAX_CENTERLINES = 6
-NORMALIZE_ROTATION = True
+ALGORITHM = "map_api" # competition, map_api, get_around
+                      # TODO: At this moment, only the "map_api" algorithm is prepared
+                      # to retrieve the centerlines (both relevant and oracle) correctly
+ALIGN = "x-axis" # If x-axis, the focal agent's last observation is aligned with the x-axis (to the right), 
+                 # so the social and map information is rotated according to this orientation.
+                 # y-axis is the same but facing up  
+MAX_CENTERLINES = 3
 INTERPOLATE_CENTERLINE_POINTS = 40
 RELATIVE_DISPLACEMENTS = True
-SAVE_DIR = os.path.join(BASE_DIR,"argoverse2_map_figures")  
+SAVE_DIR = os.path.join(BASE_DIR,"preprocess/computed_relevant_centerlines_examples")  
 DATASETS_DIR = "/home/robesafe/shared_home/benchmarks/argoverse2/motion-forecasting"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -71,7 +76,7 @@ mfu = MapFeaturesUtils()
 # Specify the splits you want to preprocess
 
                          # Split,  Flag, Split percentage
-splits_to_process = dict({"train":[True,1.0], # 0.01 (1 %), 0.1 (10 %), 1.0 (100 %)
+splits_to_process = dict({"train":[True,0.01], # 0.01 (1 %), 0.1 (10 %), 1.0 (100 %)
                           "val":  [False,1.0],
                           "test": [False,1.0]})
 
@@ -107,7 +112,7 @@ for split_name,features in splits_to_process.items():
             scenario_id = folder_.split("/")[-1]
             
             start = time.time()
-            
+
             scenario_path = os.path.join(folder_,f"scenario_{scenario_id}.parquet") # social
             static_map_path = os.path.join(folder_,f"log_map_archive_{scenario_id}.json") # map
 
@@ -130,12 +135,13 @@ for split_name,features in splits_to_process.items():
                                                                                 viz=viz_,
                                                                                 max_candidates = MAX_CENTERLINES,
                                                                                 mode=MODE,
-                                                                                normalize_rotation=NORMALIZE_ROTATION,
+                                                                                algorithm=ALGORITHM,
+                                                                                normalize_rotation=ALIGN,
                                                                                 interpolate_centerline_points=INTERPOLATE_CENTERLINE_POINTS,
                                                                                 relative_displacements=RELATIVE_DISPLACEMENTS)
             
             # Store info in dict to save in pkl format
-            
+            pdb.set_trace()
             sample = dict()
             sample["argo_id"] = scenario_id
             sample["rel_candidate_centerlines"] = rel_candidate_centerlines_array
@@ -152,7 +158,7 @@ for split_name,features in splits_to_process.items():
                 
         # Save data as pkl file
         pdb.set_trace()
-        filename = os.path.join(DATASETS_DIR,"processed_map",f"{split_name}_map_data.pkl")
+        filename = os.path.join(DATASETS_DIR,"processed_map",f"{split_name}_map_data_rot_right_x_multi_agent.pkl")
         print(f"Save data in {filename}")
         
         with open(filename, 'wb') as f:

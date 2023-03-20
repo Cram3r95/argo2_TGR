@@ -1001,7 +1001,7 @@ class MLP(nn.Module):
         super(MLP, self).__init__()
         self.linear1 = nn.Linear(input_size, output_size // 2)
         self.norm = nn.LayerNorm(output_size // 2)
-        self.ReLU = nn.ReLU()
+        self.GELU = nn.GELU()
         self.linear2 = nn.Linear(output_size // 2, output_size)
         
         # self.linear1 = nn.Linear(input_size, output_size)
@@ -1009,7 +1009,7 @@ class MLP(nn.Module):
     def forward(self, x):
         x = self.linear1(x)
         x = self.norm(x)
-        x = self.ReLU(x)
+        x = self.GELU(x)
         x = self.linear2(x)
         return x
     
