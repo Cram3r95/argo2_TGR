@@ -70,10 +70,10 @@ class MapFeaturesUtils:
     """Utils for computation of map-based features."""
     def __init__(self):
         """Initialize class."""
-        self._MANHATTAN_THRESHOLD = 20.0
+        self._MANHATTAN_THRESHOLD = 10.0
         self._DFS_THRESHOLD_FRONT_SCALE = 45.0
         self._DFS_THRESHOLD_BACK_SCALE = 40.0
-        self._MAX_SEARCH_RADIUS_CENTERLINES = 50.0
+        self._MAX_SEARCH_RADIUS_CENTERLINES = 50.0 # 50.0
         self._MAX_CENTERLINE_CANDIDATES_TEST = 6
 
     def get_point_in_polygon_score(self, lane_seq,
@@ -202,7 +202,9 @@ class MapFeaturesUtils:
 
     def get_candidate_centerlines_for_trajectory(
             self,
-            agent_track,
+            tracks,
+            derivatives,
+            map_origin,
             map_json,
             filename,
             avm,
@@ -214,8 +216,10 @@ class MapFeaturesUtils:
             time_variables: list = [50,60,10], # obs_len, pred_len, frequency
             min_dist_around: float = 15,
             normalize_rotation: str = "not_apply",
+            scene_yaw: int = None,
             interpolate_centerline_points: int = 0,
             relative_displacements: bool = False,
+            agent_index: int = -1,
             debug: bool = True
     ) -> List[np.ndarray]:
         """Get centerline candidates upto a threshold.
@@ -226,8 +230,10 @@ class MapFeaturesUtils:
         3. Get centerlines based on point in polygon score.
 
         Args:
-            agent_track: Agent track variables (x,y,heading,vx,vy), 
+            [agent_track,extended_agent_track]
+            [vel,acc]
             map_json: Argoverse2 map format, 
+            map_origin:
             avm: Argoverse map_api instance, 
             viz: Visualize candidate centerlines, 
             max_search_radius: Max search radius for finding nearby lanes in meters,
@@ -249,21 +255,16 @@ class MapFeaturesUtils:
         # 1. Preprocess observation data
         
         obs_len, pred_len, frequency = time_variables
-        full_xy = agent_track[:,:2]
         
+        full_xy, xy_filtered, extended_xy_filtered = tracks
+
+        debug = True
         if debug: # If debug, compute the centerlines with only the observation data 
                   # (even with train and val)
-            xy = agent_track[:obs_len,:2]
-        
-        ## Filter agent's trajectory (smooth)
+            xy = full_xy[:obs_len,:2]
 
-        period = float(1 / frequency)
-        vel, acc, xy_filtered, extended_xy_filtered = get_agent_velocity_and_acceleration(xy,
-                                                                                          period=period)
-        ## Compute agent's orientation in the last observation frame
+        vel, acc, yaw = derivatives
 
-        lane_dir_vector, yaw = get_yaw(xy_filtered, obs_len)
-        print("yaw: ", yaw)
         ## Estimate travelled distance
         
         dist_around = vel * (pred_len / frequency) + 1/2 * acc * (pred_len / frequency)**2
@@ -428,7 +429,8 @@ class MapFeaturesUtils:
             # dfs_threshold_front = dfs_threshold_back = dfs_threshold
                 
             dfs_threshold_front = dist_around
-            dfs_threshold_back = dist_around
+            # dfs_threshold_back = dist_around
+            dfs_threshold_back = 0
 
             # DFS to get all successor and predecessor candidates
             
@@ -446,7 +448,7 @@ class MapFeaturesUtils:
                         obs_pred_lanes.append(past_lane_seq + future_lane_seq[1:])
 
             # Removing overlapping lanes
-            
+            # pdb.set_trace()
             obs_pred_lanes = remove_overlapping_lane_seq(obs_pred_lanes)
 
             # Remove unnecessary extended predecessors
@@ -495,17 +497,26 @@ class MapFeaturesUtils:
                     final_candidates.append(candidate_centerlines[index])
 
             candidate_centerlines = final_candidates
-            
-        # 3. (Optional) Rotate centerlines w.r.t. focal agent last observation frame
+        
+        # 3. (Mandatory) Translate to the origin
+
+        for candidate_centerline in candidate_centerlines:
+            candidate_centerline -= map_origin    
+
+        # 4. (Optional) Rotate centerlines w.r.t. focal agent last observation frame
         
         if normalize_rotation != "not_apply":
-            if normalize_rotation == "x-axis":
-                yaw_aux = yaw
-            elif normalize_rotation == "y-axis":
-                yaw_aux = - (math.pi/2 - yaw)
-            else:
-                pdb.set_trace()
-                
+            if scene_yaw:
+                yaw_aux = scene_yaw
+            # TODO: Check this for single-agent prediction!!!!
+            # elif normalize_rotation == "x-axis":
+            #     yaw_aux = yaw
+            # elif normalize_rotation == "y-axis":
+            #     yaw_aux = - (math.pi/2 - yaw)
+            # else:
+            #     print("Rotation not specified")
+            #     pdb.set_trace()
+ 
             R = rotz2D(yaw_aux)
             xy = apply_rotation(xy,R)
             full_xy = apply_rotation(full_xy,R)
@@ -516,7 +527,7 @@ class MapFeaturesUtils:
                 candidate_centerlines_aux.append(candidate_centerline_aux)
             candidate_centerlines = candidate_centerlines_aux
         
-        # 4. Interpolate centerlines
+        # 5. Interpolate centerlines
 
         if interpolate_centerline_points > 0:
             candidate_centerlines_aux = []
@@ -529,20 +540,21 @@ class MapFeaturesUtils:
                     candidate_centerlines_aux.append(candidate_centerline_aux)
             candidate_centerlines = candidate_centerlines_aux 
         
-        # 5. (Optional) Get relative displacements
+        # 6. (Optional) Get relative displacements
 
         rel_candidate_centerlines_array = np.array(candidate_centerlines)
         
-        if relative_displacements:
+        if relative_displacements and candidate_centerlines:
             candidate_centerlines_array = np.array(candidate_centerlines)
 
             rel_candidate_centerlines_array = np.zeros(candidate_centerlines_array.shape) 
             rel_candidate_centerlines_array[:, 1:, :] = candidate_centerlines_array[:, 1:, :] - candidate_centerlines_array[:, :-1, :] # Get displacements between consecutive steps
         
-        # 5. Pad centerlines with zeros
+        # 7. Pad centerlines with zeros
         
         pad_centerlines = True
-        if pad_centerlines:
+        
+        if pad_centerlines and candidate_centerlines:
             # Determine if there are some repeated centerlines after filtering. Take the unique
             # elements. If after this there are less than max_centerlines, pad with zeros
 
@@ -555,69 +567,69 @@ class MapFeaturesUtils:
             pad_zeros_centerlines = np.zeros((max_candidates-rel_candidate_centerlines_array_aux.shape[0],centerline_points,data_dim))
             rel_candidate_centerlines_array = np.vstack((rel_candidate_centerlines_array_aux,pad_zeros_centerlines))
               
-        if viz:
-            plt.figure(0, figsize=(8, 7))
-            for centerline_coords in candidate_centerlines:
-                visualize_centerline(centerline_coords)
+        # if viz:
+        #     plt.figure(0, figsize=(8, 7))
+        #     for centerline_coords in candidate_centerlines:
+        #         visualize_centerline(centerline_coords)
                 
-            # Observation 
+        #     # Observation 
             
-            plt.plot(
-                xy[:, 0],
-                xy[:, 1],
-                "-",
-                color="#d33e4c",
-                alpha=1,
-                linewidth=3,
-                zorder=15,
-            )
+        #     plt.plot(
+        #         xy[:, 0],
+        #         xy[:, 1],
+        #         "-",
+        #         color="#d33e4c",
+        #         alpha=1,
+        #         linewidth=3,
+        #         zorder=15,
+        #     )
 
-            final_x = xy[-1, 0]
-            final_y = xy[-1, 1]
+        #     final_x = xy[-1, 0]
+        #     final_y = xy[-1, 1]
 
-            plt.plot(
-                final_x,
-                final_y,
-                "o",
-                color="#d33e4c",
-                alpha=1,
-                markersize=10,
-                zorder=15,
-            )
+        #     plt.plot(
+        #         final_x,
+        #         final_y,
+        #         "o",
+        #         color="#d33e4c",
+        #         alpha=1,
+        #         markersize=10,
+        #         zorder=15,
+        #     )
             
-            # Ground-truth prediction
+        #     # Ground-truth prediction
             
-            plt.plot(
-                full_xy[obs_len:, 0],
-                full_xy[obs_len:, 1],
-                "-",
-                color="blue",
-                alpha=1,
-                linewidth=3,
-                zorder=15,
-            )
+        #     plt.plot(
+        #         full_xy[obs_len:, 0],
+        #         full_xy[obs_len:, 1],
+        #         "-",
+        #         color="blue",
+        #         alpha=1,
+        #         linewidth=3,
+        #         zorder=15,
+        #     )
 
-            final_x = full_xy[-1, 0]
-            final_y = full_xy[-1, 1]
+        #     final_x = full_xy[-1, 0]
+        #     final_y = full_xy[-1, 1]
 
-            plt.plot(
-                final_x,
-                final_y,
-                "o",
-                color="blue",
-                alpha=1,
-                markersize=10,
-                zorder=15,
-            )
+        #     plt.plot(
+        #         final_x,
+        #         final_y,
+        #         "o",
+        #         color="blue",
+        #         alpha=1,
+        #         markersize=10,
+        #         zorder=15,
+        #     )
             
-            plt.xlabel("Map X")
-            plt.ylabel("Map Y")
-            plt.axis("off")
-            plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-            print("filename: ", filename)
-            plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+        #     plt.xlabel("Map X")
+        #     plt.ylabel("Map Y")
+        #     plt.axis("off")
+        #     plt.title(f"Number of candidates = {len(candidate_centerlines)}")
+        #     print("filename: ", filename)
+        #     plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
 
-            plt.close('all')
+        #     plt.close('all')
 
         return candidate_centerlines, rel_candidate_centerlines_array
     
@@ -923,7 +935,7 @@ def load_static_map_json(static_map_path: Path) -> StaticMapElements:
 
     return cast(StaticMapElements, static_map_elements)
 
-def get_agent_velocity_and_acceleration(agent_seq, period=0.1, debug=False):
+def get_agent_velocity_and_acceleration(agent_seq, period=0.1, filter_traj="least_squares",debug=False):
     """
     Consider the observation data to calculate an average velocity and 
     acceleration of the agent in the last observation point
@@ -989,11 +1001,10 @@ def get_agent_velocity_and_acceleration(agent_seq, period=0.1, debug=False):
     min_weight = 1
     max_weight = 4
 
-    if filter == "least_squares":
+    if filter_traj == "least_squares":
         # Theoretically, if the points are computed using Least Squares with a Polynomial with order >= 2,
         # the velocity in the last observation should be fine, since you are taking into account the 
         # acceleration (either negative or positive)
-
         vel_f_averaged = vel_f[-1]
     else:
         vel_f_averaged = np.average(vel_f,weights=np.linspace(min_weight,max_weight,len(vel_f))) 
@@ -1011,7 +1022,7 @@ def get_agent_velocity_and_acceleration(agent_seq, period=0.1, debug=False):
         print("vel averaged: ", vel_f_averaged)
         print("acc averaged: ", acc_f_averaged)
         
-        pred_len = 30
+        pred_len = 60
         freq = 10
 
         dist_around_wo_acc = vel_f_averaged * (pred_len/freq)
@@ -1093,11 +1104,13 @@ def get_agent_velocity_and_acceleration(agent_seq, period=0.1, debug=False):
     extended_xy_f = extended_xy_f.T
 
     return vel_f_averaged, acc_f_averaged, xy_f, extended_xy_f
-
+    
 def get_yaw(agent_xy, obs_len):
     """
     Assuming the agent observation has been filtered, determine the agent's orientation
     in the last observation
+    
+    Angles range from 0 (0º) to pi (180º), and -pi (180º) to -0 (360º)
     """
 
     lane_dir_vector = agent_xy[obs_len-1,:] - agent_xy[obs_len-2,:]

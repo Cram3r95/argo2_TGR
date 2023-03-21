@@ -132,3 +132,4 @@ dmypy.json
 __pycache__/
 dataset/
 submission/ 
+preprocess/**/*.png
