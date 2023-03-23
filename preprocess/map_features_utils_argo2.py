@@ -68,6 +68,15 @@ StaticMapElements = Dict[str, List[Any]]
 
 #######################################
 
+# Aux functions
+
+def find_nearest(array, value):
+    array = np.asarray(array)
+    idx = np.sqrt(np.sum((array-value)**2,axis=1)).argmin()
+    return idx
+
+# Main classes
+
 class MapFeaturesUtils:
     """Utils for computation of map-based features."""
     def __init__(self, static_map_path):
@@ -79,9 +88,7 @@ class MapFeaturesUtils:
         self._MAX_CENTERLINE_CANDIDATES_TEST = 6
         self._INTERPOLATE_CENTERLINE_POINTS = 40
         
-        # TODO: Simplify this?
-        self.static_map_argo2 = ArgoverseStaticMap.from_json(Path(static_map_path)) # Argo2 map
-        self.map_json = ScenarioMap(static_map_path) # Auxiliar Argo2 map with the heuristic of Argo1
+        self.map_json = ScenarioMap(static_map_path, self._INTERPOLATE_CENTERLINE_POINTS) # Auxiliar Argo2 map with the heuristic of Argo1
 
     def get_point_in_polygon_score(self, 
                                    lane_seq,
@@ -148,7 +155,6 @@ class MapFeaturesUtils:
             scores,
     ):
         """Sort based on distance along centerline and return the centerlines.
-
         Args:
             lane_seqs: Sequence of lane sequences
             xy_seq: Trajectory coordinates
@@ -156,7 +162,6 @@ class MapFeaturesUtils:
             max_candidates: Maximum number of centerlines to return
         Return:
             sorted_candidate_centerlines: Centerlines in the order of their score
-
         """
         aligned_centerlines = []
         diverse_centerlines = []
@@ -170,7 +175,7 @@ class MapFeaturesUtils:
             score = scores[i]
             diverse = True
             centerline = self.map_json.get_cl_from_lane_seq([lane_seq])[0] # Index 0 since the list only has 1 element here
-            pdb.set_trace()
+
             if aligned_cl_count < int(max_candidates / 2):
                 start_dist = LineString(centerline).project(Point(xy_seq[0]))
                 end_dist = LineString(centerline).project(Point(xy_seq[-1]))
@@ -184,7 +189,7 @@ class MapFeaturesUtils:
 
         num_diverse_centerlines = min(len(diverse_centerlines),
                                       max_candidates - aligned_cl_count)
-        pdb.set_trace()
+
         test_centerlines = aligned_centerlines
         if num_diverse_centerlines > 0:
             probabilities = ([
@@ -203,8 +208,78 @@ class MapFeaturesUtils:
             ]
 
             test_centerlines += diverse_centerlines
-        pdb.set_trace()
+
         return test_centerlines
+    
+    def get_heuristic_hdmap_info_for_test_set(
+            self,
+            lane_seqs,
+            xy_seq,
+            avm,
+            max_candidates,
+            scores,
+    ):
+        """Sort based on distance along centerline and return the centerlines.
+
+        Args:
+            lane_seqs: Sequence of lane sequences
+            xy_seq: Trajectory coordinates
+            avm: Argoverse map_api instance
+            max_candidates: Maximum number of centerlines to return
+        Return:
+            sorted_candidate_hdmap_info: HDMap info in the order of their score
+
+        """
+        aligned_hdmap = []
+        diverse_hdmap = []
+        diverse_scores = []
+
+        # Get first half as aligned centerlines
+        
+        aligned_cl_count = 0
+        for i in range(len(lane_seqs)):
+            lane_seq = lane_seqs[i]
+            score = scores[i]
+            diverse = True
+
+            hdmap_info = self.map_json.get_cl_and_boundaries_from_lane_seq([lane_seq])[0]
+            centerline = hdmap_info["centerline"]
+            
+            if aligned_cl_count < int(max_candidates / 2):
+                start_dist = LineString(centerline).project(Point(xy_seq[0]))
+                end_dist = LineString(centerline).project(Point(xy_seq[-1]))
+                if end_dist > start_dist:
+                    aligned_cl_count += 1
+                    aligned_hdmap.append(hdmap_info)
+                    diverse = False
+            if diverse:
+                diverse_hdmap.append(hdmap_info)
+                diverse_scores.append(score)
+
+        num_diverse_centerlines = min(len(diverse_hdmap),
+                                      max_candidates - aligned_cl_count)
+
+        test_hdmap = aligned_hdmap
+        
+        if num_diverse_centerlines > 0:
+            probabilities = ([
+                float(score + 1) / (sum(diverse_scores) + len(diverse_scores))
+                for score in diverse_scores
+            ] if sum(diverse_scores) > 0 else [1.0 / len(diverse_scores)] *
+                             len(diverse_scores))
+            diverse_centerlines_idx = np.random.choice(
+                range(len(probabilities)),
+                num_diverse_centerlines,
+                replace=False,
+                p=probabilities,
+            )
+            diverse_hdmap = [
+                diverse_hdmap[i] for i in diverse_centerlines_idx
+            ]
+
+            test_hdmap += diverse_hdmap
+
+        return test_hdmap
 
     def get_candidate_centerlines_for_trajectory(
             self,
@@ -289,8 +364,8 @@ class MapFeaturesUtils:
                 if distance_travelled > max_dist and index_max_dist == -1:
                     index_max_dist = i
 
-        # reference_point = extended_xy_filtered[index_max_dist,:] # Reference point assuming naive prediction
-        reference_point = extended_xy_filtered[obs_len-1,:] # Reference point assuming last observation
+        reference_point = extended_xy_filtered[index_max_dist,:] # Reference point assuming naive prediction
+        # reference_point = extended_xy_filtered[obs_len-1,:] # Reference point assuming last observation
         
         # 2. Get centerlines using the corresponding algorithm
         
@@ -359,151 +434,152 @@ class MapFeaturesUtils:
 
             # If the best centerline is not along the direction of travel, re-sort
 
-            if mode == "test":
-                candidate_centerlines = self.get_heuristic_centerlines_for_test_set(
-                    obs_pred_lanes, xy_filtered, avm, max_candidates, scores)
-            else:
-                candidate_centerlines = self.map_json.get_cl_from_lane_seq(
-                    [obs_pred_lanes[0]])
+            candidate_hdmap_info = self.get_heuristic_hdmap_info_for_test_set(
+                obs_pred_lanes, xy_filtered, avm, max_candidates, scores)
 
             # (Optional) Sort centerlines based on the distance to a reference point, usually the last observation
 
+            candidate_centerlines = [hdmap_info["centerline"] for hdmap_info in candidate_hdmap_info]
             distances = []
             for centerline in candidate_centerlines:
                 distances.append(min(np.linalg.norm((centerline - reference_point),axis=1)))
         
-            # If we want to filter those lanes with the same distance to reference point
-            # TODO: Is this hypothesis correct?
-            
-            # unique_distances = list(set(distances))
-            # unique_distances.sort()
-            # unique_distances = unique_distances[:max_candidates]
-
-            # # print("unique distances: ", unique_distances)
-            # final_indeces = [np.where(distances == unique_distance)[0][0] for unique_distance in unique_distances]
-
-            # final_candidates = []
-            # for index in final_indeces:
-            #     final_candidates.append(candidate_centerlines[index])
-
-            sorted_indeces = np.argsort(distances)
-            final_candidates = []
-            for index in sorted_indeces:
-                final_candidates.append(candidate_centerlines[index])
-                
-            candidate_centerlines = final_candidates
-            
-        elif algorithm == "map_api": 
-        # Compute centerlines using Argoverse Map API
-
-            # Get all lane candidates within a bubble
-            
-            curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
-                xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
-
-            # Keep expanding the bubble until at least 1 lane is found
-            
-            while (len(curr_lane_candidates) < 1
-                and self._MANHATTAN_THRESHOLD < max_search_radius):
-                self._MANHATTAN_THRESHOLD *= 2
-                curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
-                    xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
-                
-            try:
-                assert len(curr_lane_candidates) > 0, "No nearby lanes found!!"
-            except:
-                while (len(curr_lane_candidates) < 1
-                    and self._MANHATTAN_THRESHOLD < max_search_radius*100):
-                    self._MANHATTAN_THRESHOLD *= 2
-                    curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
-                        xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
-                try:
-                    assert (len(curr_lane_candidates) > 0)
-                except:
-                    while (len(curr_lane_candidates) < 1 and self._MANHATTAN_THRESHOLD < max_search_radius*500):
-                        self._MANHATTAN_THRESHOLD *= 2
-                        curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
-                            xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
-            assert (len(curr_lane_candidates) > 0)
-
-            # displacement = np.sqrt((xy[0, 0] - xy[obs_len-1, 0]) ** 2 + (xy[0, 1] - xy[obs_len-1, 1]) ** 2)
-            # dfs_threshold = displacement * 2.0
-            # dfs_threshold_front = dfs_threshold_back = dfs_threshold
-                
-            dfs_threshold_front = dist_around
-            dfs_threshold_back = dist_around
-
-            # DFS to get all successor and predecessor candidates
-            
-            obs_pred_lanes = [] # NOQA
-            for lane in curr_lane_candidates:
-                candidates_future = self.map_json.dfs(lane, 0,
-                                            dfs_threshold_front)
-                candidates_past = self.map_json.dfs(lane, 0, dfs_threshold_back,
-                                        True)
-
-                # Merge past and future
-                for past_lane_seq in candidates_past:
-                    for future_lane_seq in candidates_future:
-                        assert past_lane_seq[-1] == future_lane_seq[0], "Incorrect DFS for candidate lanes past and future"
-                        obs_pred_lanes.append(past_lane_seq + future_lane_seq[1:])
-
-            # Removing overlapping lanes
-            # pdb.set_trace()
-            obs_pred_lanes = remove_overlapping_lane_seq(obs_pred_lanes)
-
-            # Remove unnecessary extended predecessors
-            
-            obs_pred_lanes = self.map_json.remove_extended_predecessors(obs_pred_lanes, xy_filtered)
-
-            # Getting candidate centerlines
-            
-            candidate_cl = self.map_json.get_cl_from_lane_seq(obs_pred_lanes)
-
-            # Reduce the number of candidates based on distance travelled along the centerline
-            
-            candidate_centerlines = filter_candidate_centerlines(xy_filtered, candidate_cl)
-
-            # If no candidate found using above criteria, take the onces along with travel is the maximum
-            if len(candidate_centerlines) < 1:
-                candidate_centerlines = get_centerlines_most_aligned_with_trajectory(xy_filtered, candidate_cl)
-
-            ## Additional ##
-
-            # Sort centerlines based on the distance to a reference point, usually the last observation
-
-            distances = []
-            for centerline in candidate_centerlines:
-                distances.append(min(np.linalg.norm((centerline - reference_point),axis=1)))
-            
-            AVOID_SAME_MIN_DISTANCES = True
+            AVOID_SAME_MIN_DISTANCES = False
             
             if AVOID_SAME_MIN_DISTANCES:
                 # Avoid repeating centerlines with the same min distance
-                
+            
                 unique_distances = list(set(distances))
                 unique_distances.sort()
                 unique_distances = unique_distances[:max_candidates]
 
                 final_indeces = [np.where(distances == unique_distance)[0][0] for unique_distance in unique_distances]
 
-                final_candidates = []
+                final_hdmap_info = []
                 for index in final_indeces:
-                    final_candidates.append(candidate_centerlines[index])
+                    final_hdmap_info.append(candidate_hdmap_info[index])
             else:
                 sorted_indeces = np.argsort(distances)
-                sorted_indeces = sorted_indeces[:max_candidates]
-                final_candidates = []
+                final_hdmap_info = []
                 for index in sorted_indeces:
-                    final_candidates.append(candidate_centerlines[index])
-
-            candidate_centerlines = final_candidates
+                    final_hdmap_info.append(candidate_hdmap_info[index])
+                
+            candidate_hdmap_info = final_hdmap_info
         
+        # TODO: Refactorize using HDMap info instead of just centerlines
+        # elif algorithm == "map_api": 
+        # # Compute centerlines using Argoverse Map API
+
+        #     # Get all lane candidates within a bubble
+            
+        #     curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
+        #         xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
+
+        #     # Keep expanding the bubble until at least 1 lane is found
+            
+        #     while (len(curr_lane_candidates) < 1
+        #         and self._MANHATTAN_THRESHOLD < max_search_radius):
+        #         self._MANHATTAN_THRESHOLD *= 2
+        #         curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
+        #             xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+                
+        #     try:
+        #         assert len(curr_lane_candidates) > 0, "No nearby lanes found!!"
+        #     except:
+        #         while (len(curr_lane_candidates) < 1
+        #             and self._MANHATTAN_THRESHOLD < max_search_radius*100):
+        #             self._MANHATTAN_THRESHOLD *= 2
+        #             curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
+        #                 xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+        #         try:
+        #             assert (len(curr_lane_candidates) > 0)
+        #         except:
+        #             while (len(curr_lane_candidates) < 1 and self._MANHATTAN_THRESHOLD < max_search_radius*500):
+        #                 self._MANHATTAN_THRESHOLD *= 2
+        #                 curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
+        #                     xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
+        #     assert (len(curr_lane_candidates) > 0)
+
+        #     # displacement = np.sqrt((xy[0, 0] - xy[obs_len-1, 0]) ** 2 + (xy[0, 1] - xy[obs_len-1, 1]) ** 2)
+        #     # dfs_threshold = displacement * 2.0
+        #     # dfs_threshold_front = dfs_threshold_back = dfs_threshold
+                
+        #     dfs_threshold_front = dist_around
+        #     dfs_threshold_back = dist_around
+
+        #     # DFS to get all successor and predecessor candidates
+            
+        #     obs_pred_lanes = [] # NOQA
+        #     for lane in curr_lane_candidates:
+        #         candidates_future = self.map_json.dfs(lane, 0,
+        #                                     dfs_threshold_front)
+        #         candidates_past = self.map_json.dfs(lane, 0, dfs_threshold_back,
+        #                                 True)
+
+        #         # Merge past and future
+        #         for past_lane_seq in candidates_past:
+        #             for future_lane_seq in candidates_future:
+        #                 assert past_lane_seq[-1] == future_lane_seq[0], "Incorrect DFS for candidate lanes past and future"
+        #                 obs_pred_lanes.append(past_lane_seq + future_lane_seq[1:])
+
+        #     # Removing overlapping lanes
+
+        #     obs_pred_lanes = remove_overlapping_lane_seq(obs_pred_lanes)
+
+        #     # Remove unnecessary extended predecessors
+            
+        #     obs_pred_lanes = self.map_json.remove_extended_predecessors(obs_pred_lanes, xy_filtered)
+
+        #     # Getting candidate centerlines
+            
+        #     candidate_cl = self.map_json.get_cl_from_lane_seq(obs_pred_lanes)
+
+        #     # Reduce the number of candidates based on distance travelled along the centerline
+            
+        #     candidate_centerlines = filter_candidate_centerlines(xy_filtered, candidate_cl)
+
+        #     # If no candidate found using above criteria, take the onces along with travel is the maximum
+        #     if len(candidate_centerlines) < 1:
+        #         candidate_centerlines = get_centerlines_most_aligned_with_trajectory(xy_filtered, candidate_cl)
+
+        #     ## Additional ##
+
+        #     # Sort centerlines based on the distance to a reference point, usually the last observation
+
+        #     distances = []
+        #     for centerline in candidate_centerlines:
+        #         distances.append(min(np.linalg.norm((centerline - reference_point),axis=1)))
+            
+        #     AVOID_SAME_MIN_DISTANCES = True
+            
+        #     if AVOID_SAME_MIN_DISTANCES:
+        #         # Avoid repeating centerlines with the same min distance
+                
+        #         unique_distances = list(set(distances))
+        #         unique_distances.sort()
+        #         unique_distances = unique_distances[:max_candidates]
+
+        #         final_indeces = [np.where(distances == unique_distance)[0][0] for unique_distance in unique_distances]
+
+        #         final_candidates = []
+        #         for index in final_indeces:
+        #             final_candidates.append(candidate_centerlines[index])
+        #     else:
+        #         sorted_indeces = np.argsort(distances)
+        #         sorted_indeces = sorted_indeces[:max_candidates]
+        #         final_candidates = []
+        #         for index in sorted_indeces:
+        #             final_candidates.append(candidate_centerlines[index])
+
+        #     candidate_centerlines = final_candidates
+
         # 3. (Mandatory) Translate to the origin
-
-        for candidate_centerline in candidate_centerlines:
-            candidate_centerline -= map_origin    
-
+        
+        for candidate_hdmap_info_ in candidate_hdmap_info:
+            candidate_hdmap_info_["centerline"] = candidate_hdmap_info_["centerline"] - map_origin    
+            candidate_hdmap_info_["left_bound"] = candidate_hdmap_info_["left_bound"] - map_origin    
+            candidate_hdmap_info_["right_bound"] = candidate_hdmap_info_["right_bound"] - map_origin    
+            
         # 4. (Optional) Rotate centerlines w.r.t. focal agent last observation frame
         
         if normalize_rotation != "not_apply":
@@ -519,59 +595,118 @@ class MapFeaturesUtils:
             #     pdb.set_trace()
  
             R = rotz2D(yaw_aux)
-            xy = apply_rotation(xy,R)
-            full_xy = apply_rotation(full_xy,R)
-               
-            candidate_centerlines_aux = []
-            for candidate_centerline in candidate_centerlines:
-                candidate_centerline_aux = apply_rotation(candidate_centerline,R)
-                candidate_centerlines_aux.append(candidate_centerline_aux)
-            candidate_centerlines = candidate_centerlines_aux
-        
+
+            for candidate_hdmap_info_ in candidate_hdmap_info:
+                candidate_hdmap_info_["centerline"] = apply_rotation(candidate_hdmap_info_["centerline"],R)
+                candidate_hdmap_info_["left_bound"] = apply_rotation(candidate_hdmap_info_["left_bound"],R)
+                candidate_hdmap_info_["right_bound"] = apply_rotation(candidate_hdmap_info_["right_bound"],R)
+
         # 5. Interpolate centerlines
-
-        if self._INTERPOLATE_CENTERLINE_POINTS > 0:
-            candidate_centerlines_aux = []
-            for candidate_centerline in candidate_centerlines:
-                candidate_centerline_aux = centerline_interpolation(candidate_centerline,
-                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
-
-                # Do not store the centerline if could not be interpolated
-                if type(candidate_centerline_aux) is np.ndarray:
-                    candidate_centerlines_aux.append(candidate_centerline_aux)
-            candidate_centerlines = candidate_centerlines_aux 
         
+        non_interp_candidate_hdmap_info = copy.deepcopy(candidate_hdmap_info)
+        
+        if self._INTERPOLATE_CENTERLINE_POINTS > 0:
+            for candidate_hdmap_info_ in candidate_hdmap_info:
+                candidate_hdmap_info_["centerline"] = centerline_interpolation(candidate_hdmap_info_["centerline"],
+                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
+                candidate_hdmap_info_["left_bound"] = centerline_interpolation(candidate_hdmap_info_["left_bound"],
+                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
+                candidate_hdmap_info_["right_bound"] = centerline_interpolation(candidate_hdmap_info_["right_bound"],
+                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
+        
+        # 6. Recalculate type and intersection arrays
+        
+        for i in range(len(non_interp_candidate_hdmap_info)):
+            ref_indeces = non_interp_candidate_hdmap_info[i]["centerline_length"]
+            ref_indeces = np.cumsum(ref_indeces)[:] - 1  
+            ref_points = non_interp_candidate_hdmap_info[i]["centerline"][ref_indeces,:] # end-point of each segment 
+            left_ref_indeces = [find_nearest(non_interp_candidate_hdmap_info[i]["left_bound"],ref_point) for ref_point in ref_points]
+            right_ref_indeces = [find_nearest(non_interp_candidate_hdmap_info[i]["right_bound"],ref_point) for ref_point in ref_points]
+            
+            # Reference points from the original geometry (centerline ref points are above)
+            
+            left_ref_points = non_interp_candidate_hdmap_info[i]["left_bound"][left_ref_indeces,:]
+            right_ref_points = non_interp_candidate_hdmap_info[i]["right_bound"][right_ref_indeces,:]
+            
+            # Closest indeces to the current geometry (after interpolation)
+            
+            closest_indeces = [find_nearest(candidate_hdmap_info[i]["centerline"],ref_point) for ref_point in ref_points]
+            left_closest_indeces = [find_nearest(candidate_hdmap_info[i]["left_bound"],left_ref_point) for left_ref_point in left_ref_points]
+            right_closest_indeces = [find_nearest(candidate_hdmap_info[i]["right_bound"],right_ref_point) for right_ref_point in right_ref_points]
+            
+            candidate_hdmap_info[i]["centerline_type"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,candidate_hdmap_info[i]["centerline_type"].shape[1]))
+            candidate_hdmap_info[i]["is_intersection"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,candidate_hdmap_info[i]["is_intersection"].shape[1]))
+            candidate_hdmap_info[i]["left_type"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,candidate_hdmap_info[i]["left_type"].shape[1]))
+            candidate_hdmap_info[i]["right_type"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,candidate_hdmap_info[i]["right_type"].shape[1]))
+            
+            pre_index = 0
+            left_pre_index = 0
+            right_pre_index = 0
+
+            for j in range(len(closest_indeces)):
+                index = closest_indeces[j] + 1
+                left_index = left_closest_indeces[j] + 1
+                right_index = right_closest_indeces[j] + 1
+                
+                candidate_hdmap_info[i]["centerline_type"][pre_index:index,:] = \
+                    non_interp_candidate_hdmap_info[i]["centerline_type"][ref_indeces[j],:]
+                candidate_hdmap_info[i]["is_intersection"][pre_index:index,:] = \
+                    non_interp_candidate_hdmap_info[i]["is_intersection"][ref_indeces[j],:]
+                    
+                candidate_hdmap_info[i]["left_type"][left_pre_index:left_index,:] = \
+                    non_interp_candidate_hdmap_info[i]["left_type"][left_ref_indeces[j],:]
+                candidate_hdmap_info[i]["right_type"][right_pre_index:right_index,:] = \
+                    non_interp_candidate_hdmap_info[i]["right_type"][right_ref_indeces[j],:]
+                
+                pre_index = index
+                left_pre_index = left_index
+                right_pre_index = right_index
+
+            del candidate_hdmap_info[i]["centerline_length"] # Now this key is useless
+          
         # 6. (Optional) Get relative displacements
 
-        rel_candidate_centerlines_array = np.array(candidate_centerlines)
+        # rel_candidate_centerlines_array = np.array(candidate_centerlines)
         
-        if relative_displacements and candidate_centerlines:
-            candidate_centerlines_array = np.array(candidate_centerlines)
+        # if relative_displacements and candidate_centerlines:
+        #     candidate_centerlines_array = np.array(candidate_centerlines)
 
-            rel_candidate_centerlines_array = np.zeros(candidate_centerlines_array.shape) 
-            rel_candidate_centerlines_array[:, 1:, :] = candidate_centerlines_array[:, 1:, :] - candidate_centerlines_array[:, :-1, :] # Get displacements between consecutive steps
+        #     rel_candidate_centerlines_array = np.zeros(candidate_centerlines_array.shape) 
+        #     rel_candidate_centerlines_array[:, 1:, :] = candidate_centerlines_array[:, 1:, :] - candidate_centerlines_array[:, :-1, :] # Get displacements between consecutive steps
         
+        for candidate_hdmap_info_ in candidate_hdmap_info:
+            candidate_hdmap_info_["rel_centerline"] = np.zeros(candidate_hdmap_info_["centerline"].shape)
+            candidate_hdmap_info_["rel_left_bound"] = np.zeros(candidate_hdmap_info_["left_bound"].shape)
+            candidate_hdmap_info_["rel_right_bound"] = np.zeros(candidate_hdmap_info_["right_bound"].shape)
+            
+            candidate_hdmap_info_["rel_centerline"] = candidate_hdmap_info_["centerline"][1:,:] - candidate_hdmap_info_["centerline"][:-1,:]
+            candidate_hdmap_info_["rel_left_bound"] = candidate_hdmap_info_["left_bound"][1:,:] - candidate_hdmap_info_["left_bound"][:-1,:]
+            candidate_hdmap_info_["rel_right_bound"] = candidate_hdmap_info_["right_bound"][1:,:] - candidate_hdmap_info_["right_bound"][:-1,:]
+            
         # 7. Pad centerlines with zeros
         
-        pad_centerlines = True
+        # pad_centerlines = True
         
-        if pad_centerlines and candidate_centerlines:
-            # Determine if there are some repeated centerlines after filtering. Take the unique
-            # elements. If after this there are less than max_centerlines, pad with zeros
+        # if pad_centerlines and candidate_centerlines:
+        #     # Determine if there are some repeated centerlines after filtering. Take the unique
+        #     # elements. If after this there are less than max_centerlines, pad with zeros
 
-            aux_array = copy.deepcopy(rel_candidate_centerlines_array)
-            vals, idx_start, count = np.unique(rel_candidate_centerlines_array, axis=0, return_counts=True, return_index=True)
-            rel_candidate_centerlines_array_aux = aux_array[np.sort(idx_start),:,:]
+        #     aux_array = copy.deepcopy(rel_candidate_centerlines_array)
+        #     vals, idx_start, count = np.unique(rel_candidate_centerlines_array, axis=0, return_counts=True, return_index=True)
+        #     rel_candidate_centerlines_array_aux = aux_array[np.sort(idx_start),:,:]
             
-            centerline_points = 40
-            data_dim = 2
-            pad_zeros_centerlines = np.zeros((max_candidates-rel_candidate_centerlines_array_aux.shape[0],centerline_points,data_dim))
-            rel_candidate_centerlines_array = np.vstack((rel_candidate_centerlines_array_aux,pad_zeros_centerlines))
-
-        return candidate_centerlines, rel_candidate_centerlines_array
+        #     centerline_points = 40
+        #     data_dim = 2
+        #     pad_zeros_centerlines = np.zeros((max_candidates-rel_candidate_centerlines_array_aux.shape[0],centerline_points,data_dim))
+        #     rel_candidate_centerlines_array = np.vstack((rel_candidate_centerlines_array_aux,pad_zeros_centerlines))
+        # if pad_centerlines:
+        #     print(" ")
+        # return candidate_centerlines, rel_candidate_centerlines_array
+        
+        return candidate_hdmap_info
     
 class ScenarioMap:
-    def __init__(self, root):
+    def __init__(self, root, interpolate_centerline_points):
         """Initialize the Argoverse Map 2 using functions of the original Argoverse Map 1."""
         
         """ TODO: Integrate the StaticMap functions here in order to have only two map objects,
@@ -581,6 +716,8 @@ class ScenarioMap:
         self.root = root
         self.render_window_radius = 150
         self.im_scale_factor = 50
+        self._INTERPOLATE_CENTERLINE_POINTS = interpolate_centerline_points
+        
         self.data = load_static_map_json(root)
         self.city_lane_centerlines_dict, self.predecessors_dict, self.successors_dict = self.build_centerline_index()
         (
@@ -729,6 +866,39 @@ class ScenarioMap:
         except:
             return None
         
+    def get_lane_segment_centerline_and_boundaries(self, lane_segment_id):
+        """
+        We return a 3D centerline for any particular lane segment.
+        Args:
+            lane_segment_id: unique identifier for a lane segment within a city
+        Returns:
+            Whole HDMap information
+        """
+
+        try:
+            lane_centerline_array = np.array([[centerline['x'], centerline['y'], centerline['z']] for centerline in self.city_lane_centerlines_dict[lane_segment_id]['centerline']])
+            num_points = lane_centerline_array.shape[0]
+            
+            lane_type = self.city_lane_centerlines_dict[lane_segment_id]['lane_type']
+            lane_type_array = self.get_lanetype(num_points, lane_type)
+            is_intersection = self.city_lane_centerlines_dict[lane_segment_id]['is_intersection']
+            is_intersection_array = self.get_lane_in_intersection(num_points, is_intersection)
+            
+            left_boundary = np.array([[waypoint['x'], waypoint['y'], waypoint['z']] for waypoint in self.city_lane_centerlines_dict[lane_segment_id]['left_lane_boundary']])
+            right_boundary = np.array([[waypoint['x'], waypoint['y'], waypoint['z']] for waypoint in self.city_lane_centerlines_dict[lane_segment_id]['right_lane_boundary']])
+                        
+            left_line_type = self.city_lane_centerlines_dict[lane_segment_id]['left_lane_mark_type']
+            left_line_type_array = self.get_mark_type(left_boundary.shape[0], left_line_type)
+            right_line_type = self.city_lane_centerlines_dict[lane_segment_id]['right_lane_mark_type']  
+            right_line_type_array = self.get_mark_type(right_boundary.shape[0], right_line_type)
+
+            return lane_centerline_array, lane_type_array, is_intersection_array,\
+                   left_boundary, right_boundary, left_line_type_array, right_line_type_array
+                   
+        except:
+            pdb.set_trace()
+            return None
+        
     def get_lane_segment_polygon(self, lane_segment_id: int, eps=1.0) -> np.ndarray:
         """
         Hallucinate a 3d lane polygon based around the centerline. We rely on the average
@@ -773,6 +943,9 @@ class ScenarioMap:
                 if inside:
                     occupied_lane_ids += [lane_id]
         return occupied_lane_ids
+    
+    def get_lane_in_intersection(self, lane_points, is_intersection):
+        return is_intersection * np.ones(lane_points, np.float32)
     
     def get_lanetype(self, lane_points, lane_type):
         x = np.zeros((lane_points,2), np.float32)
@@ -913,6 +1086,47 @@ class ScenarioMap:
                 curr_candidate_cl = np.vstack((curr_candidate_cl, curr_candidate))
             candidate_cl.append(curr_candidate_cl)
         return candidate_cl
+    
+    def get_cl_and_boundaries_from_lane_seq(self, lane_seqs: Iterable[List[int]]) -> List[np.ndarray]:
+        """Get centerlines corresponding to each lane sequence in lane_sequences
+        Args:
+            lane_seqs: Iterable of sequence of lane ids (Eg. [[12345, 12346, 12347], [12345, 12348]])
+        Returns:
+            whole HD-map information related to the current lane seq
+        """
+        # TODO: Refactorize this function using lambdas
+        
+        hdmap_info = []
+        for lanes in lane_seqs:
+            sample = dict()
+            
+            cl_, cl_length_, cl_type_, is_inters_, left_bound_, right_bound_, left_type_, right_type_ = \
+                ([] for _ in range(8))
+                
+            for curr_lane in lanes:
+                cl, cl_type, is_inters, left_bound, right_bound, left_type, right_type = \
+                    self.get_lane_segment_centerline_and_boundaries(curr_lane)
+
+                cl_.append(cl[:, :2]) # Avoid z-axis
+                cl_length_.append(cl.shape[0])
+                cl_type_.append(cl_type)
+                is_inters_.append(is_inters)
+                left_bound_.append(left_bound[:, :2])
+                right_bound_.append(right_bound[:, :2])
+                left_type_.append(left_type)
+                right_type_.append(right_type)
+
+            sample["centerline"] = np.concatenate(cl_)
+            sample["centerline_length"] = np.array(cl_length_)
+            sample["centerline_type"] = np.concatenate(cl_type_)
+            sample["is_intersection"] = np.concatenate(is_inters_).reshape(-1,1)
+            sample["left_bound"] = np.concatenate(left_bound_)
+            sample["right_bound"] = np.concatenate(right_bound_)
+            sample["left_type"] = np.concatenate(left_type_)
+            sample["right_type"] = np.concatenate(right_type_)
+            
+            hdmap_info.append(sample)
+        return hdmap_info
 
     def dfs(
         self,

@@ -81,19 +81,26 @@ avm = ArgoverseMap() # Argo1 map
 
 # Aux functions
 
+line_types = {"cl":["--"],"bound":["-"]}
+
 def visualize_centerline(centerline: LineString, 
-                         color: tuple) -> None:
+                         color: tuple,
+                         line_type: str) -> None:
     """Visualize the computed centerline.
 
     Args:
         centerline: Sequence of coordinates forming the centerline
     """
+    
+    
     line_coords = list(zip(*centerline))
     lineX = line_coords[0]
     lineY = line_coords[1]
-    plt.plot(lineX, lineY, "--", color=color, alpha=1, linewidth=1, zorder=0)
-    plt.text(lineX[0], lineY[0], "s")
-    plt.text(lineX[-1], lineY[-1], "e")
+    plt.plot(lineX, lineY, line_types[line_type][0], color=color, alpha=1, linewidth=1, zorder=0)
+    
+    if line_type == "cl":
+        plt.text(lineX[0], lineY[0], "s")
+        plt.text(lineX[-1], lineY[-1], "e")
     plt.axis("equal")
     
 # Specify the splits you want to preprocess
@@ -226,8 +233,8 @@ for split_name,features in splits_to_process.items():
                     lane_dir_vector, yaw = get_yaw(xy_filtered, curr_obs_len)
             
                 # Get most relevant physical information
-
-                candidate_centerlines, rel_candidate_centerlines_array = mfu.get_candidate_centerlines_for_trajectory( 
+                # candidate_centerlines, rel_candidate_centerlines_array
+                candidate_hdmap_info = mfu.get_candidate_centerlines_for_trajectory( 
                                                                                 filename,
                                                                                 [agent_track_full_xy,xy_filtered,extended_xy_filtered],
                                                                                 [vel,acc,yaw],
@@ -242,15 +249,20 @@ for split_name,features in splits_to_process.items():
                                                                                 relative_displacements=RELATIVE_DISPLACEMENTS,
                                                                                 agent_index=agent_index)
                 
-                sample[key] = rel_candidate_centerlines_array
+                sample[key] = candidate_hdmap_info
 
                 # Visualize agents with their corresponding relevant centerlines
 
                 color = (np.random.random(), np.random.random(), np.random.random())
-                
-                for centerline_coords in candidate_centerlines:
-                    visualize_centerline(centerline_coords,color)
-                
+
+                for candidate_hdmap_info_ in candidate_hdmap_info:
+                    # Centerline
+                    visualize_centerline(candidate_hdmap_info_["centerline"],color,"cl")
+                    # Left bound
+                    visualize_centerline(candidate_hdmap_info_["left_bound"],color,"bound")
+                    # Right bound
+                    visualize_centerline(candidate_hdmap_info_["right_bound"],color,"bound")
+                    
                 # Observation 
             
                 ## Rotate trajectory
@@ -317,22 +329,22 @@ for split_name,features in splits_to_process.items():
                 
                 # Uncomment this to obtain each particular each
                 
-                # filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.png")
-                # plt.xlabel("Map X")
-                # plt.ylabel("Map Y")
-                # # plt.axis("off")
+                filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.png")
+                plt.xlabel("Map X")
+                plt.ylabel("Map Y")
+                # plt.axis("off")
                 # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-                # plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
-                # plt.close('all')
+                plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+                plt.close('all')
                 
             # Uncomment this to obtain the whole scene
             
-            plt.xlabel("Map X")
-            plt.ylabel("Map Y")
-            # plt.axis("off")
-            plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-            plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
-            plt.close('all')
+            # plt.xlabel("Map X")
+            # plt.ylabel("Map Y")
+            # # plt.axis("off")
+            # # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
+            # plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+            # plt.close('all')
             
             pdb.set_trace()
             
