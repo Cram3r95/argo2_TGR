@@ -9,6 +9,7 @@ Created on Wed Feb 27 17:55:12 2023
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from av2.datasets.motion_forecasting.data_schema import ObjectType
 
 class ArgoDataExtractor:
     def __init__(self, args):
@@ -50,6 +51,29 @@ class ArgoDataExtractor:
 
         return np.float32(res), data[:, -1, :2]
 
+    # TODO: Not used at this moment
+    def get_object_type(self, object_type):
+        x = np.zeros(3, np.float32)
+        if object_type == ObjectType.STATIC or object_type == ObjectType.BACKGROUND or object_type == ObjectType.CONSTRUCTION or object_type == ObjectType.RIDERLESS_BICYCLE:
+            x[:] = 0
+        elif object_type == ObjectType.PEDESTRIAN:
+            x[2] = 1
+        elif object_type == ObjectType.CYCLIST:
+            x[1] = 1
+        elif object_type == ObjectType.MOTORCYCLIST:
+            x[1] = 1
+            x[2] = 1
+        elif object_type == ObjectType.BUS:
+            x[0] = 1
+        elif object_type == ObjectType.VEHICLE:
+            x[0] = 1
+            x[2] = 1
+        elif object_type == ObjectType.UNKNOWN:
+            x[0] = 1
+            x[1] = 1
+            x[2] = 1
+        return x
+    
     def extract_data(self, filename):
         """Load parquet and extract the features required for TFMF (Trsformers for Motion Forecasting)
 

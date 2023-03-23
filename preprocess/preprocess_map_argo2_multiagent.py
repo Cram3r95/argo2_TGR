@@ -67,7 +67,6 @@ ALIGN = "x-axis" # If x-axis, the focal agent's last observation is aligned with
                  # so the social and map information is rotated according to this orientation.
                  # y-axis is the same but facing up  
 MAX_CENTERLINES = 3
-INTERPOLATE_CENTERLINE_POINTS = 40
 MIN_POINTS_INTERP = 4 # to perform a cubic interpolation you need at least 3 points
 RELATIVE_DISPLACEMENTS = True
 SAVE_DIR = os.path.join(BASE_DIR,"preprocess/computed_relevant_centerlines_examples")  
@@ -78,8 +77,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 # Global variables
 
-avm = ArgoverseMap()
-mfu = MapFeaturesUtils()
+avm = ArgoverseMap() # Argo1 map
 
 # Aux functions
 
@@ -138,11 +136,16 @@ for split_name,features in splits_to_process.items():
             
             start = time.time()
 
+            # Social features
+            
             scenario_path = os.path.join(folder_,f"scenario_{scenario_id}.parquet") # social
-            static_map_path = os.path.join(folder_,f"log_map_archive_{scenario_id}.json") # map
-
             scenario = scenario_serialization.load_argoverse_scenario_parquet(scenario_path)
             df = pd.read_parquet(scenario_path)
+            
+            # Map features
+            
+            static_map_path = os.path.join(folder_,f"log_map_archive_{scenario_id}.json") # map
+            mfu = MapFeaturesUtils(static_map_path) # My own map functions
             
             # Get all agents
             
@@ -177,9 +180,8 @@ for split_name,features in splits_to_process.items():
         
             # Compute the most relevant centerlines for each relevant agent and align these map features with 
             # the FOCAL AGENT last orientation
-            # OBS: An agent is only relevant if it is present in the 49-th timestamp (last observation frame)
+            # OBS: An agent is only relevant if it is present in the obs-len-th timestamp (last observation frame)
             
-            map_json = ScenarioMap(static_map_path)
             filename = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}.png")
             sample = dict()
             sample["argo_id"] = scenario_id
@@ -226,20 +228,17 @@ for split_name,features in splits_to_process.items():
                 # Get most relevant physical information
 
                 candidate_centerlines, rel_candidate_centerlines_array = mfu.get_candidate_centerlines_for_trajectory( 
+                                                                                filename,
                                                                                 [agent_track_full_xy,xy_filtered,extended_xy_filtered],
                                                                                 [vel,acc,yaw],
                                                                                 map_origin,
-                                                                                map_json,
-                                                                                filename,
                                                                                 avm,
-                                                                                viz=viz_,
                                                                                 max_candidates = MAX_CENTERLINES,
                                                                                 mode=MODE,
                                                                                 algorithm=ALGORITHM,
                                                                                 time_variables=[curr_obs_len,PRED_LEN,FREQUENCY],
                                                                                 normalize_rotation=ALIGN,
                                                                                 scene_yaw=scene_yaw,
-                                                                                interpolate_centerline_points=INTERPOLATE_CENTERLINE_POINTS,
                                                                                 relative_displacements=RELATIVE_DISPLACEMENTS,
                                                                                 agent_index=agent_index)
                 
@@ -315,20 +314,25 @@ for split_name,features in splits_to_process.items():
                     markersize=10,
                     zorder=15,
                 )
-                filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.png")
-                plt.xlabel("Map X")
-                plt.ylabel("Map Y")
-                # plt.axis("off")
-                plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-                plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
-                plt.close('all')
-            # plt.xlabel("Map X")
-            # plt.ylabel("Map Y")
-            # # plt.axis("off")
-            # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-            # plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
-
-            # plt.close('all')
+                
+                # Uncomment this to obtain each particular each
+                
+                # filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.png")
+                # plt.xlabel("Map X")
+                # plt.ylabel("Map Y")
+                # # plt.axis("off")
+                # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
+                # plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+                # plt.close('all')
+                
+            # Uncomment this to obtain the whole scene
+            
+            plt.xlabel("Map X")
+            plt.ylabel("Map Y")
+            # plt.axis("off")
+            plt.title(f"Number of candidates = {len(candidate_centerlines)}")
+            plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+            plt.close('all')
             
             pdb.set_trace()
             
@@ -344,7 +348,7 @@ for split_name,features in splits_to_process.items():
                         Estimated time to finish ({folders_remaining} files): {round(time_per_iteration*folders_remaining/60)} min")
                 
         # Save data as pkl file
-        pdb.set_trace()
+        
         filename = os.path.join(DATASETS_DIR,"processed_map",f"{split_name}_map_data_rot_right_x_multi_agent.pkl")
         print(f"Save data in {filename}")
         

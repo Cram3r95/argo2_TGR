@@ -215,7 +215,7 @@ class TMFModel(pl.LightningModule):
         ## Social
         
         ### Extract the social features in each sample of the current batch
-        
+        pdb.set_trace()
         displ, centers = batch["displ"], batch["centers"]
         rotation, origin = batch["rotation"], batch["origin"]
         agents_per_sample = [x.shape[0] for x in displ]

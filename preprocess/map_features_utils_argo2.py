@@ -46,7 +46,6 @@ sys.path.append(BASE_DIR)
 ## Argoverse 1
 
 from argoverse.utils.geometry import point_inside_polygon
-from argoverse.map_representation.map_api import ArgoverseMap
 from argoverse.utils.centerline_utils import (
     centerline_to_polygon,
     filter_candidate_centerlines,
@@ -60,6 +59,9 @@ from argoverse.utils.mpl_plotting_utils import visualize_centerline
 
 ## Argoverse 2
 
+from av2.map.map_api import ArgoverseStaticMap
+from av2.map.lane_segment import LaneType, LaneMarkType
+
 # Global variables 
 
 StaticMapElements = Dict[str, List[Any]]
@@ -68,16 +70,22 @@ StaticMapElements = Dict[str, List[Any]]
 
 class MapFeaturesUtils:
     """Utils for computation of map-based features."""
-    def __init__(self):
+    def __init__(self, static_map_path):
         """Initialize class."""
         self._MANHATTAN_THRESHOLD = 10.0
         self._DFS_THRESHOLD_FRONT_SCALE = 45.0
         self._DFS_THRESHOLD_BACK_SCALE = 40.0
         self._MAX_SEARCH_RADIUS_CENTERLINES = 50.0 # 50.0
         self._MAX_CENTERLINE_CANDIDATES_TEST = 6
+        self._INTERPOLATE_CENTERLINE_POINTS = 40
+        
+        # TODO: Simplify this?
+        self.static_map_argo2 = ArgoverseStaticMap.from_json(Path(static_map_path)) # Argo2 map
+        self.map_json = ScenarioMap(static_map_path) # Auxiliar Argo2 map with the heuristic of Argo1
 
-    def get_point_in_polygon_score(self, lane_seq,
-                                   xy_seq, map_json,
+    def get_point_in_polygon_score(self, 
+                                   lane_seq,
+                                   xy_seq,
                                    avm) -> int:
         """Get the number of coordinates that lie insde the lane seq polygon.
 
@@ -90,8 +98,8 @@ class MapFeaturesUtils:
             lane sequence
         """
         lane_seq_polygon = unary_union([
-            Polygon(map_json.get_lane_segment_polygon(lane)).buffer(0)
-            for lane in lane_seq if len(map_json.get_lane_segment_centerline(lane)) > 1
+            Polygon(self.map_json.get_lane_segment_polygon(lane)).buffer(0)
+            for lane in lane_seq if len(self.map_json.get_lane_segment_centerline(lane)) > 1
         ])
         point_in_polygon_score = 0
         for xy in xy_seq:        
@@ -102,7 +110,6 @@ class MapFeaturesUtils:
             self,
             lane_seqs,
             xy_seq,
-            map_json,
             avm,
     ):
         """Filter lane_seqs based on the number of coordinates inside the bounding polygon of lanes.
@@ -110,7 +117,6 @@ class MapFeaturesUtils:
         Args:
             lane_seqs: Sequence of lane sequences
             xy_seq: Trajectory coordinates
-            map_json:
             avm: Argoverse map_api instance
         Returns:
             sorted_lane_seqs: Sequences of lane sequences sorted based on the point_in_polygon score
@@ -119,8 +125,8 @@ class MapFeaturesUtils:
         point_in_polygon_scores = []
         for lane_seq in lane_seqs:
             point_in_polygon_scores.append(
-                self.get_point_in_polygon_score(lane_seq, xy_seq, map_json,
-                                                avm))
+                self.get_point_in_polygon_score(lane_seq, xy_seq, avm))
+            
         randomized_tiebreaker = np.random.random(len(point_in_polygon_scores))
         sorted_point_in_polygon_scores_idx = np.lexsort(
             (randomized_tiebreaker, np.array(point_in_polygon_scores)))[::-1]
@@ -137,7 +143,6 @@ class MapFeaturesUtils:
             self,
             lane_seqs,
             xy_seq,
-            map_json,
             avm,
             max_candidates,
             scores,
@@ -147,7 +152,6 @@ class MapFeaturesUtils:
         Args:
             lane_seqs: Sequence of lane sequences
             xy_seq: Trajectory coordinates
-            map_json:
             avm: Argoverse map_api instance
             max_candidates: Maximum number of centerlines to return
         Return:
@@ -159,12 +163,14 @@ class MapFeaturesUtils:
         diverse_scores = []
 
         # Get first half as aligned centerlines
+        
         aligned_cl_count = 0
         for i in range(len(lane_seqs)):
             lane_seq = lane_seqs[i]
             score = scores[i]
             diverse = True
-            centerline = map_json.get_cl_from_lane_seq([lane_seq])[0]
+            centerline = self.map_json.get_cl_from_lane_seq([lane_seq])[0] # Index 0 since the list only has 1 element here
+            pdb.set_trace()
             if aligned_cl_count < int(max_candidates / 2):
                 start_dist = LineString(centerline).project(Point(xy_seq[0]))
                 end_dist = LineString(centerline).project(Point(xy_seq[-1]))
@@ -178,7 +184,7 @@ class MapFeaturesUtils:
 
         num_diverse_centerlines = min(len(diverse_centerlines),
                                       max_candidates - aligned_cl_count)
-
+        pdb.set_trace()
         test_centerlines = aligned_centerlines
         if num_diverse_centerlines > 0:
             probabilities = ([
@@ -197,18 +203,16 @@ class MapFeaturesUtils:
             ]
 
             test_centerlines += diverse_centerlines
-
+        pdb.set_trace()
         return test_centerlines
 
     def get_candidate_centerlines_for_trajectory(
             self,
+            filename,
             tracks,
             derivatives,
             map_origin,
-            map_json,
-            filename,
             avm,
-            viz: bool = False,
             max_search_radius: float = 50.0,
             max_candidates: int = 10,
             mode: str = "test",
@@ -217,7 +221,6 @@ class MapFeaturesUtils:
             min_dist_around: float = 15,
             normalize_rotation: str = "not_apply",
             scene_yaw: int = None,
-            interpolate_centerline_points: int = 0,
             relative_displacements: bool = False,
             agent_index: int = -1,
             debug: bool = True
@@ -230,9 +233,9 @@ class MapFeaturesUtils:
         3. Get centerlines based on point in polygon score.
 
         Args:
-            [agent_track,extended_agent_track]
-            [vel,acc]
-            map_json: Argoverse2 map format, 
+            filename,
+            tracks: [agent_track,extended_agent_track]
+            derivates: [vel,acc,yaw]
             map_origin:
             avm: Argoverse map_api instance, 
             viz: Visualize candidate centerlines, 
@@ -242,7 +245,6 @@ class MapFeaturesUtils:
             time_variables:
             min_dist_around:
             normalize_rotation:
-            interpolate_centerline_points:
             relative_displacements:
             debug:
         Returns:
@@ -295,7 +297,7 @@ class MapFeaturesUtils:
         if algorithm == "competition":
             # Get all lane candidates within a bubble
             
-            curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+            curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                 xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
 
             # Keep expanding the bubble until at least 1 lane is found
@@ -303,7 +305,7 @@ class MapFeaturesUtils:
             while (len(curr_lane_candidates) < 1
                 and self._MANHATTAN_THRESHOLD < max_search_radius):
                 self._MANHATTAN_THRESHOLD *= 2
-                curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                     xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
                 
             try:
@@ -312,14 +314,14 @@ class MapFeaturesUtils:
                 while (len(curr_lane_candidates) < 1
                     and self._MANHATTAN_THRESHOLD < max_search_radius*100):
                     self._MANHATTAN_THRESHOLD *= 2
-                    curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                    curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                         xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
                 try:
                     assert (len(curr_lane_candidates) > 0)
                 except:
                     while (len(curr_lane_candidates) < 1 and self._MANHATTAN_THRESHOLD < max_search_radius*500):
                         self._MANHATTAN_THRESHOLD *= 2
-                        curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                        curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                             xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
             assert (len(curr_lane_candidates) > 0)
             
@@ -333,9 +335,9 @@ class MapFeaturesUtils:
             
             obs_pred_lanes = [] # NOQA
             for lane in curr_lane_candidates:
-                candidates_future = map_json.dfs(lane, 0,
+                candidates_future = self.map_json.dfs(lane, 0,
                                             dfs_threshold_front)
-                candidates_past = map_json.dfs(lane, 0, dfs_threshold_back,
+                candidates_past = self.map_json.dfs(lane, 0, dfs_threshold_back,
                                         True)
 
                 # Merge past and future
@@ -353,15 +355,15 @@ class MapFeaturesUtils:
             # Sort lanes based on point in polygon score
             
             obs_pred_lanes, scores = self.sort_lanes_based_on_point_in_polygon_score(
-                obs_pred_lanes, xy_filtered, map_json, avm)
+                obs_pred_lanes, xy_filtered, avm)
 
             # If the best centerline is not along the direction of travel, re-sort
 
             if mode == "test":
                 candidate_centerlines = self.get_heuristic_centerlines_for_test_set(
-                    obs_pred_lanes, xy_filtered, map_json, avm, max_candidates, scores)
+                    obs_pred_lanes, xy_filtered, avm, max_candidates, scores)
             else:
-                candidate_centerlines = map_json.get_cl_from_lane_seq(
+                candidate_centerlines = self.map_json.get_cl_from_lane_seq(
                     [obs_pred_lanes[0]])
 
             # (Optional) Sort centerlines based on the distance to a reference point, usually the last observation
@@ -396,7 +398,7 @@ class MapFeaturesUtils:
 
             # Get all lane candidates within a bubble
             
-            curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+            curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                 xy[-1, 0], xy[-1, 1], self._MANHATTAN_THRESHOLD)
 
             # Keep expanding the bubble until at least 1 lane is found
@@ -404,7 +406,7 @@ class MapFeaturesUtils:
             while (len(curr_lane_candidates) < 1
                 and self._MANHATTAN_THRESHOLD < max_search_radius):
                 self._MANHATTAN_THRESHOLD *= 2
-                curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                     xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
                 
             try:
@@ -413,14 +415,14 @@ class MapFeaturesUtils:
                 while (len(curr_lane_candidates) < 1
                     and self._MANHATTAN_THRESHOLD < max_search_radius*100):
                     self._MANHATTAN_THRESHOLD *= 2
-                    curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                    curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                         xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
                 try:
                     assert (len(curr_lane_candidates) > 0)
                 except:
                     while (len(curr_lane_candidates) < 1 and self._MANHATTAN_THRESHOLD < max_search_radius*500):
                         self._MANHATTAN_THRESHOLD *= 2
-                        curr_lane_candidates = map_json.get_lane_ids_in_xy_bbox(
+                        curr_lane_candidates = self.map_json.get_lane_ids_in_xy_bbox(
                             xy_filtered[-1, 0], xy_filtered[-1, 1], self._MANHATTAN_THRESHOLD)
             assert (len(curr_lane_candidates) > 0)
 
@@ -429,16 +431,15 @@ class MapFeaturesUtils:
             # dfs_threshold_front = dfs_threshold_back = dfs_threshold
                 
             dfs_threshold_front = dist_around
-            # dfs_threshold_back = dist_around
-            dfs_threshold_back = 0
+            dfs_threshold_back = dist_around
 
             # DFS to get all successor and predecessor candidates
             
             obs_pred_lanes = [] # NOQA
             for lane in curr_lane_candidates:
-                candidates_future = map_json.dfs(lane, 0,
+                candidates_future = self.map_json.dfs(lane, 0,
                                             dfs_threshold_front)
-                candidates_past = map_json.dfs(lane, 0, dfs_threshold_back,
+                candidates_past = self.map_json.dfs(lane, 0, dfs_threshold_back,
                                         True)
 
                 # Merge past and future
@@ -453,11 +454,11 @@ class MapFeaturesUtils:
 
             # Remove unnecessary extended predecessors
             
-            obs_pred_lanes = map_json.remove_extended_predecessors(obs_pred_lanes, xy_filtered)
+            obs_pred_lanes = self.map_json.remove_extended_predecessors(obs_pred_lanes, xy_filtered)
 
             # Getting candidate centerlines
             
-            candidate_cl = map_json.get_cl_from_lane_seq(obs_pred_lanes)
+            candidate_cl = self.map_json.get_cl_from_lane_seq(obs_pred_lanes)
 
             # Reduce the number of candidates based on distance travelled along the centerline
             
@@ -529,11 +530,11 @@ class MapFeaturesUtils:
         
         # 5. Interpolate centerlines
 
-        if interpolate_centerline_points > 0:
+        if self._INTERPOLATE_CENTERLINE_POINTS > 0:
             candidate_centerlines_aux = []
             for candidate_centerline in candidate_centerlines:
                 candidate_centerline_aux = centerline_interpolation(candidate_centerline,
-                                                                    interp_points=interpolate_centerline_points)
+                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
 
                 # Do not store the centerline if could not be interpolated
                 if type(candidate_centerline_aux) is np.ndarray:
@@ -566,76 +567,17 @@ class MapFeaturesUtils:
             data_dim = 2
             pad_zeros_centerlines = np.zeros((max_candidates-rel_candidate_centerlines_array_aux.shape[0],centerline_points,data_dim))
             rel_candidate_centerlines_array = np.vstack((rel_candidate_centerlines_array_aux,pad_zeros_centerlines))
-              
-        # if viz:
-        #     plt.figure(0, figsize=(8, 7))
-        #     for centerline_coords in candidate_centerlines:
-        #         visualize_centerline(centerline_coords)
-                
-        #     # Observation 
-            
-        #     plt.plot(
-        #         xy[:, 0],
-        #         xy[:, 1],
-        #         "-",
-        #         color="#d33e4c",
-        #         alpha=1,
-        #         linewidth=3,
-        #         zorder=15,
-        #     )
-
-        #     final_x = xy[-1, 0]
-        #     final_y = xy[-1, 1]
-
-        #     plt.plot(
-        #         final_x,
-        #         final_y,
-        #         "o",
-        #         color="#d33e4c",
-        #         alpha=1,
-        #         markersize=10,
-        #         zorder=15,
-        #     )
-            
-        #     # Ground-truth prediction
-            
-        #     plt.plot(
-        #         full_xy[obs_len:, 0],
-        #         full_xy[obs_len:, 1],
-        #         "-",
-        #         color="blue",
-        #         alpha=1,
-        #         linewidth=3,
-        #         zorder=15,
-        #     )
-
-        #     final_x = full_xy[-1, 0]
-        #     final_y = full_xy[-1, 1]
-
-        #     plt.plot(
-        #         final_x,
-        #         final_y,
-        #         "o",
-        #         color="blue",
-        #         alpha=1,
-        #         markersize=10,
-        #         zorder=15,
-        #     )
-            
-        #     plt.xlabel("Map X")
-        #     plt.ylabel("Map Y")
-        #     plt.axis("off")
-        #     plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-        #     print("filename: ", filename)
-        #     plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
-
-        #     plt.close('all')
 
         return candidate_centerlines, rel_candidate_centerlines_array
     
 class ScenarioMap:
     def __init__(self, root):
-        """Initialize the Argoverse Map."""
+        """Initialize the Argoverse Map 2 using functions of the original Argoverse Map 1."""
+        
+        """ TODO: Integrate the StaticMap functions here in order to have only two map objects,
+        avm (Argoverse Map API 1) and scenario_map (Argoverse Map API 2, including these functions
+        and the Static Map functions"""
+        
         self.root = root
         self.render_window_radius = 150
         self.im_scale_factor = 50
@@ -780,6 +722,7 @@ class ScenarioMap:
         Returns:
             lane_centerline: Numpy array of shape (N,3)
         """
+
         try:
             lane_centerline = np.array([[centerline['x'], centerline['y'], centerline['z']] for centerline in self.city_lane_centerlines_dict[lane_segment_id]['centerline']])
             return lane_centerline
@@ -830,6 +773,104 @@ class ScenarioMap:
                 if inside:
                     occupied_lane_ids += [lane_id]
         return occupied_lane_ids
+    
+    def get_lanetype(self, lane_points, lane_type):
+        x = np.zeros((lane_points,2), np.float32)
+        if lane_type == LaneType.VEHICLE:
+            x[:, :] = 1
+        elif lane_type == LaneType.BUS:
+            x[:, 0] = 1
+            x[:, 1] = 0
+        elif lane_type == LaneType.BIKE:
+            x[:, 0] = 0
+            x[:, 1] = 1
+        else:
+            x[:, :] = 0
+        return x
+            
+    def get_mark_type(self, lane_points, mark_type):
+        # 0 (Number of lines) -> None = 0, Single_line = 1, Double_line = 2
+        # 1 (First line type, if apply) -> Dash = 0, Solid = 1
+        # 2 (Second line type, if apply) -> Dash = 0, Solid = 1
+        # 3 (Line(s) colour) -> White = 0, Yellow = 1, Blue = 2 
+        x = np.zeros((lane_points,4), np.float32)
+        if mark_type == LaneMarkType.DASH_SOLID_YELLOW: 
+            # Two lines, one is dashed, the other is solid, both are yellow
+            x[:, 0] = 2
+            x[:, 1] = 0
+            x[:, 2] = 1
+            x[:, 3] = 1
+        elif mark_type == LaneMarkType.DASH_SOLID_WHITE:
+            x[:, 0] = 2
+            x[:, 1] = 0
+            x[:, 2] = 1
+            x[:, 3] = 0
+        elif mark_type == LaneMarkType.DASHED_WHITE:   
+            x[:, 0] = 1
+            x[:, 1] = 0
+            x[:, 2] = 0
+            x[:, 3] = 0
+        elif mark_type == LaneMarkType.DASHED_YELLOW:   
+            x[:, 0] = 1
+            x[:, 1] = 0
+            x[:, 2] = 0  
+            x[:, 3] = 1
+        elif mark_type == LaneMarkType.DOUBLE_SOLID_YELLOW:
+            x[:, 0] = 2
+            x[:, 1] = 1
+            x[:, 2] = 1
+            x[:, 3] = 1
+        elif mark_type == LaneMarkType.DOUBLE_SOLID_WHITE:   
+            x[:, 0] = 2
+            x[:, 1] = 1
+            x[:, 2] = 1
+            x[:, 3] = 0
+        elif mark_type == LaneMarkType.DOUBLE_DASH_YELLOW:   
+            x[:, 0] = 2
+            x[:, 1] = 0
+            x[:, 2] = 0  
+            x[:, 3] = 1            
+        elif mark_type == LaneMarkType.DOUBLE_DASH_WHITE:
+            x[:, 0] = 2
+            x[:, 1] = 0
+            x[:, 2] = 0
+            x[:, 3] = 0
+        elif mark_type == LaneMarkType.SOLID_YELLOW:   
+            x[:, 0] = 1
+            x[:, 1] = 1
+            x[:, 2] = 1
+            x[:, 3] = 1
+        elif mark_type == LaneMarkType.SOLID_WHITE:   
+            x[:, 0] = 1
+            x[:, 1] = 1
+            x[:, 2] = 1  
+            x[:, 3] = 0
+        elif mark_type == LaneMarkType.SOLID_DASH_WHITE:
+            x[:, 0] = 2
+            x[:, 1] = 1
+            x[:, 2] = 0
+            x[:, 3] = 0
+        elif mark_type == LaneMarkType.SOLID_DASH_YELLOW:   
+            x[:, 0] = 2
+            x[:, 1] = 1
+            x[:, 2] = 0
+            x[:, 3] = 1
+        elif mark_type == LaneMarkType.SOLID_BLUE:   
+            x[:, 0] = 1
+            x[:, 1] = 1
+            x[:, 2] = 1  
+            x[:, 3] = 2 
+        elif mark_type == LaneMarkType.UNKNOWN:
+            x[:, 0] = 1
+            x[:, 1] = 0
+            x[:, 2] = 0  
+            x[:, 3] = 0 
+        elif mark_type == LaneMarkType.NONE:   
+            x[:, 0] = 0
+            x[:, 1] = 0
+            x[:, 2] = 0  
+            x[:, 3] = 0 
+        return x
     
     def remove_extended_predecessors(
         self, lane_seqs: List[List[int]], xy: np.ndarray
@@ -1183,3 +1224,5 @@ def centerline_interpolation(centerline,interp_points=40,debug=False):
     interp_centerline = np.hstack([new_cx.reshape(-1,1),new_cy.reshape(-1,1)])
 
     return interp_centerline
+
+

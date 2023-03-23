@@ -29,7 +29,7 @@ class ArgoCSVDataset(torch.utils.data.Dataset):
                 self.data = pickle.load(f)
                 
             # Map
-
+            pdb.set_trace()
             if self.input_preprocessed_map:
                 with open(self.input_preprocessed_map, 'rb') as f:
                     self.data_map = pickle.load(f) 

@@ -55,8 +55,8 @@ MODEL_DIR = "model/models"
 
 from data.argoverse.argo_csv_dataset import ArgoCSVDataset
 from data.argoverse.utils.torch_utils import collate_fn_dict
-# from model.models.TFMF_TGR import TMFModel
-from model.models.TFMF_TGR_ganet import TMFModel
+from model.models.TFMF_TGR import TMFModel
+# from model.models.TFMF_TGR_ganet import TMFModel
 
 # Make newly created directories readable, writable and descendible for everyone (chmod 777)
 os.umask(0)
