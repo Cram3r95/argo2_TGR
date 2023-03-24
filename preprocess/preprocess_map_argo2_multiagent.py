@@ -55,7 +55,7 @@ OBS_LEN = 50
 PRED_LEN = 60
 FREQUENCY = 10 # Hz
 PERIOD = float(1 / FREQUENCY) # s
-VIZ = False
+VIZ = True
 limit_qualitative_results = 150
 MODE = "test" # "train","test" 
 # if train -> compute the best candidate (oracle), only using the "competition" algorithm
@@ -196,7 +196,7 @@ for split_name,features in splits_to_process.items():
             map_origin = None
             
             plt.figure(0, figsize=(8, 7))
-            
+
             for agent_index,key in enumerate(keys):
                 idcs = objs[key]    
                 ts = steps[idcs]
@@ -210,7 +210,7 @@ for split_name,features in splits_to_process.items():
                 agent_track_full_xy = agent_track[:,:2]
                     
                 xy = agent_track_full_xy[:curr_obs_len+1,:2]
-        
+
                 ## Filter agent's trajectory (smooth)
 
                 vel, acc, xy_filtered, extended_xy_filtered = get_agent_velocity_and_acceleration(xy,period=PERIOD)
@@ -230,7 +230,10 @@ for split_name,features in splits_to_process.items():
                     yaw = scene_yaw
                     map_origin = xy[-1] # origin for the remaining agents and centerlines
                 else:
-                    lane_dir_vector, yaw = get_yaw(xy_filtered, curr_obs_len)
+                    if xy_filtered.shape[0] > 1:
+                        lane_dir_vector, yaw = get_yaw(xy_filtered, curr_obs_len)
+                    else:
+                        yaw = 0
             
                 # Get most relevant physical information
                 # candidate_centerlines, rel_candidate_centerlines_array
@@ -252,102 +255,107 @@ for split_name,features in splits_to_process.items():
                 sample[key] = candidate_hdmap_info
 
                 # Visualize agents with their corresponding relevant centerlines
+                if viz_:
+                    # color = (np.random.random(), np.random.random(), np.random.random())
+                    if key[1] == "AGENT":
+                        color = [1.0,0.0,0.0]
+                    else:
+                        color = [0.0,0.0,0.0] 
 
-                color = (np.random.random(), np.random.random(), np.random.random())
-
-                for candidate_hdmap_info_ in candidate_hdmap_info:
-                    # Centerline
-                    visualize_centerline(candidate_hdmap_info_["centerline"],color,"cl")
-                    # Left bound
-                    visualize_centerline(candidate_hdmap_info_["left_bound"],color,"bound")
-                    # Right bound
-                    visualize_centerline(candidate_hdmap_info_["right_bound"],color,"bound")
+                    for candidate_hdmap_info_ in candidate_hdmap_info:
+                        if not np.any(candidate_hdmap_info_["centerline"]): # Do not visualize empty HDMap info
+                            continue
+                        # Centerline
+                        visualize_centerline(candidate_hdmap_info_["centerline"],color,"cl")
+                        # Left bound
+                        visualize_centerline(candidate_hdmap_info_["left_bound"],color,"bound")
+                        # Right bound
+                        visualize_centerline(candidate_hdmap_info_["right_bound"],color,"bound")
+                        
+                    # Observation 
+                
+                    ## Rotate trajectory
                     
-                # Observation 
-            
-                ## Rotate trajectory
-                
-                R = rotz2D(scene_yaw)
-                agent_track_full_xy = np.subtract(agent_track_full_xy,map_origin)
-                agent_track_full_xy = apply_rotation(agent_track_full_xy,R)
+                    R = rotz2D(scene_yaw)
+                    agent_track_full_xy = np.subtract(agent_track_full_xy,map_origin)
+                    agent_track_full_xy = apply_rotation(agent_track_full_xy,R)
 
-                plt.plot(
-                    agent_track_full_xy[:curr_obs_len, 0],
-                    agent_track_full_xy[:curr_obs_len, 1],
-                    "-",
-                    color=color,# color="#d33e4c",
-                    alpha=1,
-                    linewidth=3,
-                    zorder=15,
-                )
-
-                final_x = agent_track_full_xy[curr_obs_len, 0]
-                final_y = agent_track_full_xy[curr_obs_len, 1]
-
-                plt.plot(
-                    final_x,
-                    final_y,
-                    "o",
-                    color=color,#color="#d33e4c",
-                    alpha=1,
-                    markersize=10,
-                    zorder=15,
-                )
-                
-                plt.text(
-                    final_x + 1,
-                    final_y + 1,
-                    f"{agent_index}",
-                    fontsize=12,
-                    zorder=20
+                    plt.plot(
+                        agent_track_full_xy[:curr_obs_len, 0],
+                        agent_track_full_xy[:curr_obs_len, 1],
+                        "-",
+                        color=color,# color="#d33e4c",
+                        alpha=1,
+                        linewidth=3,
+                        zorder=15,
                     )
-                
-                # Ground-truth prediction
-                
-                plt.plot(
-                    agent_track_full_xy[curr_obs_len:, 0],
-                    agent_track_full_xy[curr_obs_len:, 1],
-                    "-",
-                    color=color,#color="blue",
-                    alpha=1,
-                    linewidth=3,
-                    zorder=15,
-                )
 
-                final_x = agent_track_full_xy[-1, 0]
-                final_y = agent_track_full_xy[-1, 1]
+                    final_x = agent_track_full_xy[curr_obs_len, 0]
+                    final_y = agent_track_full_xy[curr_obs_len, 1]
 
-                plt.plot(
-                    final_x,
-                    final_y,
-                    "D",
-                    color=color,#color="blue",
-                    alpha=1,
-                    markersize=10,
-                    zorder=15,
-                )
+                    plt.plot(
+                        final_x,
+                        final_y,
+                        "o",
+                        color=color,#color="#d33e4c",
+                        alpha=1,
+                        markersize=10,
+                        zorder=15,
+                    )
+                    
+                    plt.text(
+                        final_x + 1,
+                        final_y + 1,
+                        f"{agent_index}",
+                        fontsize=12,
+                        zorder=20
+                        )
+                    
+                    # Ground-truth prediction
+                    
+                    plt.plot(
+                        agent_track_full_xy[curr_obs_len:, 0],
+                        agent_track_full_xy[curr_obs_len:, 1],
+                        "-",
+                        color=color,#color="blue",
+                        alpha=1,
+                        linewidth=3,
+                        zorder=15,
+                    )
+
+                    final_x = agent_track_full_xy[-1, 0]
+                    final_y = agent_track_full_xy[-1, 1]
+
+                    plt.plot(
+                        final_x,
+                        final_y,
+                        "D",
+                        color=color,#color="blue",
+                        alpha=1,
+                        markersize=10,
+                        zorder=15,
+                    )
+                    
+                    # Uncomment this to obtain each particular each
+                    
+                    # filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.png")
+                    # plt.xlabel("Map X")
+                    # plt.ylabel("Map Y")
+                    # # plt.axis("off")
+                    # # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
+                    # plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+                    # plt.close('all')
+            
+            if viz_: 
+                # Uncomment this to obtain the whole scene
                 
-                # Uncomment this to obtain each particular each
-                
-                filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.png")
                 plt.xlabel("Map X")
                 plt.ylabel("Map Y")
                 # plt.axis("off")
                 # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-                plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+                plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
                 plt.close('all')
-                
-            # Uncomment this to obtain the whole scene
-            
-            # plt.xlabel("Map X")
-            # plt.ylabel("Map Y")
-            # # plt.axis("off")
-            # # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-            # plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
-            # plt.close('all')
-            
-            pdb.set_trace()
-            
+  
             preprocessed.append(sample)
                 
             end = time.time()

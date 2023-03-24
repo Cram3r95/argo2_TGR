@@ -87,6 +87,9 @@ class MapFeaturesUtils:
         self._MAX_SEARCH_RADIUS_CENTERLINES = 50.0 # 50.0
         self._MAX_CENTERLINE_CANDIDATES_TEST = 6
         self._INTERPOLATE_CENTERLINE_POINTS = 40
+        self._DATA_DIM = 2
+        self._LANE_TYPE_DIM = 2
+        self._LANE_MARK_DIM = 4
         
         self.map_json = ScenarioMap(static_map_path, self._INTERPOLATE_CENTERLINE_POINTS) # Auxiliar Argo2 map with the heuristic of Argo1
 
@@ -281,6 +284,23 @@ class MapFeaturesUtils:
 
         return test_hdmap
 
+    def initialize_empty_hdmap_info(self):
+        sample = dict()
+
+        sample["centerline"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._DATA_DIM))
+        sample["centerline_type"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._LANE_TYPE_DIM))
+        sample["is_intersection"] = np.zeros(self._INTERPOLATE_CENTERLINE_POINTS).reshape(-1,1)
+        sample["left_bound"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._DATA_DIM))
+        sample["right_bound"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._DATA_DIM))
+        sample["left_type"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._LANE_MARK_DIM))
+        sample["right_type"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._LANE_MARK_DIM))
+        
+        sample["rel_centerline"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._DATA_DIM))
+        sample["rel_left_bound"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._DATA_DIM))
+        sample["rel_right_bound"] = np.zeros((self._INTERPOLATE_CENTERLINE_POINTS,self._DATA_DIM))
+            
+        return sample
+    
     def get_candidate_centerlines_for_trajectory(
             self,
             filename,
@@ -605,15 +625,17 @@ class MapFeaturesUtils:
         
         non_interp_candidate_hdmap_info = copy.deepcopy(candidate_hdmap_info)
         
+        VIZ_INTERPOLATED = False
         if self._INTERPOLATE_CENTERLINE_POINTS > 0:
             for candidate_hdmap_info_ in candidate_hdmap_info:
                 candidate_hdmap_info_["centerline"] = centerline_interpolation(candidate_hdmap_info_["centerline"],
-                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
+                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS, viz=VIZ_INTERPOLATED)
+
                 candidate_hdmap_info_["left_bound"] = centerline_interpolation(candidate_hdmap_info_["left_bound"],
-                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
+                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS, viz=VIZ_INTERPOLATED)
                 candidate_hdmap_info_["right_bound"] = centerline_interpolation(candidate_hdmap_info_["right_bound"],
-                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS)
-        
+                                                                    interp_points=self._INTERPOLATE_CENTERLINE_POINTS, viz=VIZ_INTERPOLATED)
+ 
         # 6. Recalculate type and intersection arrays
         
         for i in range(len(non_interp_candidate_hdmap_info)):
@@ -682,26 +704,16 @@ class MapFeaturesUtils:
             candidate_hdmap_info_["rel_centerline"] = candidate_hdmap_info_["centerline"][1:,:] - candidate_hdmap_info_["centerline"][:-1,:]
             candidate_hdmap_info_["rel_left_bound"] = candidate_hdmap_info_["left_bound"][1:,:] - candidate_hdmap_info_["left_bound"][:-1,:]
             candidate_hdmap_info_["rel_right_bound"] = candidate_hdmap_info_["right_bound"][1:,:] - candidate_hdmap_info_["right_bound"][:-1,:]
-            
+
         # 7. Pad centerlines with zeros
         
-        # pad_centerlines = True
+        pad_centerlines = True
         
-        # if pad_centerlines and candidate_centerlines:
-        #     # Determine if there are some repeated centerlines after filtering. Take the unique
-        #     # elements. If after this there are less than max_centerlines, pad with zeros
-
-        #     aux_array = copy.deepcopy(rel_candidate_centerlines_array)
-        #     vals, idx_start, count = np.unique(rel_candidate_centerlines_array, axis=0, return_counts=True, return_index=True)
-        #     rel_candidate_centerlines_array_aux = aux_array[np.sort(idx_start),:,:]
+        if pad_centerlines:    
+            to_pad = max_candidates - len(candidate_hdmap_info)
             
-        #     centerline_points = 40
-        #     data_dim = 2
-        #     pad_zeros_centerlines = np.zeros((max_candidates-rel_candidate_centerlines_array_aux.shape[0],centerline_points,data_dim))
-        #     rel_candidate_centerlines_array = np.vstack((rel_candidate_centerlines_array_aux,pad_zeros_centerlines))
-        # if pad_centerlines:
-        #     print(" ")
-        # return candidate_centerlines, rel_candidate_centerlines_array
+            for _ in range(to_pad):
+                candidate_hdmap_info.append(self.initialize_empty_hdmap_info())
         
         return candidate_hdmap_info
     
@@ -875,29 +887,24 @@ class ScenarioMap:
             Whole HDMap information
         """
 
-        try:
-            lane_centerline_array = np.array([[centerline['x'], centerline['y'], centerline['z']] for centerline in self.city_lane_centerlines_dict[lane_segment_id]['centerline']])
-            num_points = lane_centerline_array.shape[0]
-            
-            lane_type = self.city_lane_centerlines_dict[lane_segment_id]['lane_type']
-            lane_type_array = self.get_lanetype(num_points, lane_type)
-            is_intersection = self.city_lane_centerlines_dict[lane_segment_id]['is_intersection']
-            is_intersection_array = self.get_lane_in_intersection(num_points, is_intersection)
-            
-            left_boundary = np.array([[waypoint['x'], waypoint['y'], waypoint['z']] for waypoint in self.city_lane_centerlines_dict[lane_segment_id]['left_lane_boundary']])
-            right_boundary = np.array([[waypoint['x'], waypoint['y'], waypoint['z']] for waypoint in self.city_lane_centerlines_dict[lane_segment_id]['right_lane_boundary']])
-                        
-            left_line_type = self.city_lane_centerlines_dict[lane_segment_id]['left_lane_mark_type']
-            left_line_type_array = self.get_mark_type(left_boundary.shape[0], left_line_type)
-            right_line_type = self.city_lane_centerlines_dict[lane_segment_id]['right_lane_mark_type']  
-            right_line_type_array = self.get_mark_type(right_boundary.shape[0], right_line_type)
+        lane_centerline_array = np.array([[centerline['x'], centerline['y'], centerline['z']] for centerline in self.city_lane_centerlines_dict[lane_segment_id]['centerline']])
+        num_points = lane_centerline_array.shape[0]
+        
+        lane_type = self.city_lane_centerlines_dict[lane_segment_id]['lane_type']
+        lane_type_array = self.get_lanetype(num_points, lane_type)
+        is_intersection = self.city_lane_centerlines_dict[lane_segment_id]['is_intersection']
+        is_intersection_array = self.get_lane_in_intersection(num_points, is_intersection)
+        
+        left_boundary = np.array([[waypoint['x'], waypoint['y'], waypoint['z']] for waypoint in self.city_lane_centerlines_dict[lane_segment_id]['left_lane_boundary']])
+        right_boundary = np.array([[waypoint['x'], waypoint['y'], waypoint['z']] for waypoint in self.city_lane_centerlines_dict[lane_segment_id]['right_lane_boundary']])
+                    
+        left_line_type = self.city_lane_centerlines_dict[lane_segment_id]['left_lane_mark_type']
+        left_line_type_array = self.get_mark_type(left_boundary.shape[0], left_line_type)
+        right_line_type = self.city_lane_centerlines_dict[lane_segment_id]['right_lane_mark_type']  
+        right_line_type_array = self.get_mark_type(right_boundary.shape[0], right_line_type)
 
-            return lane_centerline_array, lane_type_array, is_intersection_array,\
-                   left_boundary, right_boundary, left_line_type_array, right_line_type_array
-                   
-        except:
-            pdb.set_trace()
-            return None
+        return lane_centerline_array, lane_type_array, is_intersection_array,\
+                left_boundary, right_boundary, left_line_type_array, right_line_type_array
         
     def get_lane_segment_polygon(self, lane_segment_id: int, eps=1.0) -> np.ndarray:
         """
@@ -1233,25 +1240,31 @@ def get_agent_velocity_and_acceleration(agent_seq, period=0.1, filter_traj="leas
 
     obs_seq_f = xy_f
 
-    vel_f = np.zeros((num_points_trajectory-1))
-    for i in range(1,obs_seq_f.shape[1]):
-        x_pre, y_pre = obs_seq_f[:,i-1]
-        x_curr, y_curr = obs_seq_f[:,i]
+    if num_points_trajectory == 1: # Velocity cannot be computed
+        vel_f = np.zeros(1)
+    else:
+        vel_f = np.zeros((num_points_trajectory-1))
+        for i in range(1,obs_seq_f.shape[1]):
+            x_pre, y_pre = obs_seq_f[:,i-1]
+            x_curr, y_curr = obs_seq_f[:,i]
 
-        dist = math.sqrt(pow(x_curr-x_pre,2)+pow(y_curr-y_pre,2))
+            dist = math.sqrt(pow(x_curr-x_pre,2)+pow(y_curr-y_pre,2))
 
-        curr_vel = dist / period
-        vel_f[i-1] = curr_vel
+            curr_vel = dist / period
+            vel_f[i-1] = curr_vel
     
-    acc_f = np.zeros((num_points_trajectory-2))
-    for i in range(1,len(vel_f)):
-        vel_pre = vel_f[i-1]
-        vel_curr = vel_f[i]
+    if num_points_trajectory <= 2: # Acceleration cannot be computed
+        acc_f = np.zeros(1) 
+    else:
+        acc_f = np.zeros((num_points_trajectory-2))
+        for i in range(1,len(vel_f)):
+            vel_pre = vel_f[i-1]
+            vel_curr = vel_f[i]
 
-        delta_vel = vel_curr - vel_pre
+            delta_vel = vel_curr - vel_pre
 
-        curr_acc = delta_vel / period
-        acc_f[i-1] = curr_acc
+            curr_acc = delta_vel / period
+            acc_f[i-1] = curr_acc
 
     min_weight = 1
     max_weight = 4
@@ -1263,14 +1276,14 @@ def get_agent_velocity_and_acceleration(agent_seq, period=0.1, filter_traj="leas
         vel_f_averaged = vel_f[-1]
     else:
         vel_f_averaged = np.average(vel_f,weights=np.linspace(min_weight,max_weight,len(vel_f))) 
-
+    
     acc_f_averaged = np.average(acc_f,weights=np.linspace(min_weight,max_weight,len(acc_f)))
     acc_f_averaged_aux = acc_f_averaged
     if vel_f_averaged > 35 and acc_f_averaged > 5:
         acc_f_averaged = 0 # We assume the vehicle should not drive faster than 35 mps (meter per second)!
                             # To discard the acceleration data (35 mps = 126 kph)
                             # This is an assumption!
-
+        
     if debug:
         print("Filter: ", filter)
         print("Min weight, max weight: ", min_weight, max_weight)
@@ -1367,7 +1380,7 @@ def get_yaw(agent_xy, obs_len):
     
     Angles range from 0 (0º) to pi (180º), and -pi (180º) to -0 (360º)
     """
-
+    
     lane_dir_vector = agent_xy[obs_len-1,:] - agent_xy[obs_len-2,:]
     yaw = math.atan2(lane_dir_vector[1],lane_dir_vector[0])
 
@@ -1411,31 +1424,58 @@ def apply_rotation(tensor,R):
     # It is faster to compute the rotation using numpy (CPU) instead of torch (GPU)
     return np.matmul(tensor,R)
 
-def centerline_interpolation(centerline,interp_points=40,debug=False):
-    """_summary_
-
-    Args:
-        centerline (_type_): _description_
-        interp_points (int, optional): _description_. Defaults to 40.
-        debug (bool, optional): _description_. Defaults to False.
-
-    Returns:
-        _type_: _description_
+def centerline_interpolation(centerline,interp_points=40,viz=False):
+    """
     """
 
     try:
+        INTERP_KIND = "slinear" # cubic, quadratic
+        
         cx, cy = centerline[:,0], centerline[:,1]
         points = np.arange(cx.shape[0])
 
         new_points = np.linspace(points.min(), points.max(), interp_points)
     
-        new_cx = sp.interpolate.interp1d(points,cx,kind='cubic')(new_points)
-        new_cy = sp.interpolate.interp1d(points,cy,kind='cubic')(new_points)
+        new_cx = sp.interpolate.interp1d(points,cx,kind=INTERP_KIND)(new_points)
+        new_cy = sp.interpolate.interp1d(points,cy,kind=INTERP_KIND)(new_points)
     except:
-        if debug: pdb.set_trace()
         return []
 
     interp_centerline = np.hstack([new_cx.reshape(-1,1),new_cy.reshape(-1,1)])
+
+    if viz:
+        fig, ax = plt.subplots(figsize=(8,8), facecolor="white")
+        
+        plt.plot(centerline[:,0],
+                 centerline[:,1],
+                 "--",
+                 color="b",
+                 alpha=1,
+                 linewidth=3,
+                 zorder=1,
+            )
+        
+        plt.plot(interp_centerline[:,0],
+                 interp_centerline[:,1],
+                 "--",
+                 color="r",
+                 alpha=1,
+                 linewidth=3,
+                 zorder=1,
+            )
+
+        output_dir = os.path.join(BASE_DIR,f"preprocess/centerlines_interpolation")
+
+        if not os.path.exists(output_dir):
+            print("Create output folder: ", output_dir)
+            os.makedirs(output_dir) # makedirs creates intermediate folders
+
+        filename = os.path.join(output_dir,f"interpolated_line.png")
+
+        plt.savefig(filename, bbox_inches='tight', facecolor=fig.get_facecolor(), edgecolor='none', pad_inches=0)
+
+        plt.show()
+        plt.close('all')
 
     return interp_centerline
 
