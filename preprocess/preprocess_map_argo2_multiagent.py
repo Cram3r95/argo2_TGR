@@ -11,10 +11,11 @@ Created on Wed Feb 22 13:29:27 2023
 import pdb
 import time
 import os
-from pathlib import Path
 import git
 import sys
 import pickle
+
+from pathlib import Path
 
 # DL & Math imports
 
@@ -55,7 +56,7 @@ OBS_LEN = 50
 PRED_LEN = 60
 FREQUENCY = 10 # Hz
 PERIOD = float(1 / FREQUENCY) # s
-VIZ = True
+VIZ = False
 limit_qualitative_results = 150
 MODE = "test" # "train","test" 
 # if train -> compute the best candidate (oracle), only using the "competition" algorithm
@@ -79,12 +80,25 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 avm = ArgoverseMap() # Argo1 map
 
+TYPE_MARKER_DICT = {"DYNAMIC": (0.0,0.0,1.0), # blue
+                    "STATIC":  (0.0,1.0,0.0), # green
+                    "UNKNOWN": (0.0,0.0,0.0)} # black
+RELEVANT_OPACITY_DICT = {"0": 1.0, # FOCAL_TRACK
+                         "1": 0.7, # SCORED_TRACK
+                         "2": 0.4, # UNSCORED_TRACK
+                         "3": 0.1} # TRACK_FRAGMENT
+
+DYNAMIC_OBJECT_TYPES = ("AGENT", "AV", "vehicle", "pedestrian", "motorcyclist", "cyclist", "bus")
+STATIC_OBJECT_TYPES = ("static", "background", "construction", "riderless_bicycle")
+UNKNOWN_OBJECT_TYPES = ("unknown")
+                        
 # Aux functions
 
 line_types = {"cl":["--"],"bound":["-"]}
 
 def visualize_centerline(centerline: LineString, 
                          color: tuple,
+                         alpha: float,
                          line_type: str) -> None:
     """Visualize the computed centerline.
 
@@ -96,7 +110,13 @@ def visualize_centerline(centerline: LineString,
     line_coords = list(zip(*centerline))
     lineX = line_coords[0]
     lineY = line_coords[1]
-    plt.plot(lineX, lineY, line_types[line_type][0], color=color, alpha=1, linewidth=1, zorder=0)
+    plt.plot(lineX, 
+             lineY, 
+             line_types[line_type][0], 
+             color=color, 
+             alpha=alpha, 
+             linewidth=1, 
+             zorder=0)
     
     if line_type == "cl":
         plt.text(lineX[0], lineY[0], "s")
@@ -106,9 +126,9 @@ def visualize_centerline(centerline: LineString,
 # Specify the splits you want to preprocess
 
                          # Split,  Flag, Split percentage
-splits_to_process = dict({"train":[True,0.01], # 0.01 (1 %), 0.1 (10 %), 1.0 (100 %)
+splits_to_process = dict({"train":[False,1.0], # 0.01 (1 %), 0.1 (10 %), 1.0 (100 %)
                           "val":  [False,1.0],
-                          "test": [False,1.0]})
+                          "test": [True,1.0]})
 
 # Preprocess the corresponding folder
 
@@ -124,7 +144,7 @@ for split_name,features in splits_to_process.items():
         
         folder_list = folder_list[:num_folders]
                 
-        check_every = 0.1
+        check_every = 0.2
         check_every_n_files = math.ceil(len(folder_list)*check_every)
         print(f"Check remaining time every {check_every_n_files} files")
         time_per_iteration = float(0)
@@ -136,7 +156,7 @@ for split_name,features in splits_to_process.items():
         for i, folder_ in enumerate(folder_list):
             if limit_qualitative_results != -1 and i+1 > limit_qualitative_results:
                 viz_ = False
-                        
+       
             folders_remaining = len(folder_list) - (i+1)
             
             scenario_id = folder_.split("/")[-1]
@@ -159,8 +179,8 @@ for split_name,features in splits_to_process.items():
             agt_ts = np.sort(np.unique(df["timestep"].values))
      
             mapping = dict()
-            for i, ts in enumerate(agt_ts):
-                mapping[ts] = i
+            for j, ts in enumerate(agt_ts):
+                mapping[ts] = j
             
             trajs = np.concatenate((
                 df.position_x.to_numpy().reshape(-1, 1),
@@ -174,7 +194,9 @@ for split_name,features in splits_to_process.items():
             df['object_type']= df.apply(lambda row: 'AGENT' if row['track_id']==row['focal_track_id'] else row['object_type'],axis=1)
             df['object_type']= df.apply(lambda row: 'AV' if row['track_id']=='AV' else row['object_type'],axis=1)
 
-            objs = df.groupby(["track_id", "object_type"]).groups
+            # objs = df.groupby(["track_id", "object_type"]).groups
+            # keys = list(objs.keys())
+            objs = df.groupby(["track_id", "object_type", "object_category"]).groups
             keys = list(objs.keys())
         
             obj_type = [x[1] for x in keys]
@@ -182,6 +204,7 @@ for split_name,features in splits_to_process.items():
             agnt_key = keys.pop(obj_type.index("AGENT"))
             av_key = keys.pop(obj_type.index("AV")-1)
             keys = [agnt_key, av_key] + keys 
+            
             # For each sequence, we always set the focal (target) agent as the first agent
             # of the scene, then our ego-vehicle (AV) and finally the remanining agents
         
@@ -189,20 +212,43 @@ for split_name,features in splits_to_process.items():
             # the FOCAL AGENT last orientation
             # OBS: An agent is only relevant if it is present in the obs-len-th timestamp (last observation frame)
             
-            filename = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}.png")
+            filename = os.path.join(SAVE_DIR,f"{split_name}_candidates_{MAX_CENTERLINES}_{scenario_id}.png")
             sample = dict()
             sample["argo_id"] = scenario_id
             scene_yaw = None
             map_origin = None
             
             plt.figure(0, figsize=(8, 7))
-
+            
+            relevant_obstacles = 0
+            track_fragment_obstacles = 0
+            unscored_track_obstacles = 0
+            scored_track_obstacles = 0
+            focal_track_obstacles = 0
+        
             for agent_index,key in enumerate(keys):
                 idcs = objs[key]    
                 ts = steps[idcs]
 
-                if (OBS_LEN - 1) not in ts:
+                # Condition to include the agent
+                
+                current_object_type = key[1]
+                current_object_category = key[2]
+                
+                if ((OBS_LEN - 1) not in ts
+                    or current_object_type not in DYNAMIC_OBJECT_TYPES
+                    or current_object_category == 0):
                     continue
+                
+                relevant_obstacles += 1
+                if key[2] == 0:
+                    track_fragment_obstacles += 1
+                elif key[2] == 1:
+                    unscored_track_obstacles += 1
+                elif key[2] == 2:
+                    scored_track_obstacles += 1
+                elif key[2] == 3:
+                    focal_track_obstacles += 1
                 
                 curr_obs_len = np.where(ts == (OBS_LEN - 1))[0].item() # Get index of the (obs_len - 1)-th timestamp
                 agent = df.loc[df["track_id"] == key[0]]
@@ -222,11 +268,6 @@ for split_name,features in splits_to_process.items():
                     assert key[1] == "AGENT", print("The focal agent is not the first key")
                     lane_dir_vector, scene_yaw = get_yaw(xy_filtered, curr_obs_len)
                     
-                    if scene_yaw >= 0 and scene_yaw <= math.pi:
-                        scene_yaw = scene_yaw
-                    else:
-                        scene_yaw = -scene_yaw
-                    
                     yaw = scene_yaw
                     map_origin = xy[-1] # origin for the remaining agents and centerlines
                 else:
@@ -234,9 +275,10 @@ for split_name,features in splits_to_process.items():
                         lane_dir_vector, yaw = get_yaw(xy_filtered, curr_obs_len)
                     else:
                         yaw = 0
-            
+
                 # Get most relevant physical information
                 # candidate_centerlines, rel_candidate_centerlines_array
+                # TODO: Get these arrays as np.float32, not np.float64!!
                 candidate_hdmap_info = mfu.get_candidate_centerlines_for_trajectory( 
                                                                                 filename,
                                                                                 [agent_track_full_xy,xy_filtered,extended_xy_filtered],
@@ -256,26 +298,40 @@ for split_name,features in splits_to_process.items():
 
                 # Visualize agents with their corresponding relevant centerlines
                 if viz_:
-                    # color = (np.random.random(), np.random.random(), np.random.random())
                     if key[1] == "AGENT":
-                        color = [1.0,0.0,0.0]
+                        color = (1.0,0.0,0.0)
+                        opacity = RELEVANT_OPACITY_DICT["0"]
+                        
                     else:
-                        color = [0.0,0.0,0.0] 
+                        # color = (np.random.random(), np.random.random(), np.random.random()) 
+                        
+                        current_object_type = key[1]
+                        if current_object_type in DYNAMIC_OBJECT_TYPES:
+                            current_object_type_ = "DYNAMIC"
+                        elif current_object_type in STATIC_OBJECT_TYPES:
+                            current_object_type_ = "STATIC"
+                        elif current_object_type in UNKNOWN_OBJECT_TYPES:
+                            current_object_type_ = "UNKNOWN"
+                        else:
+                            raise Exception("Sorry, unknown object type")
+                         
+                        color = TYPE_MARKER_DICT[current_object_type_]
+                        opacity = RELEVANT_OPACITY_DICT[str(key[2])]  
 
                     for candidate_hdmap_info_ in candidate_hdmap_info:
                         if not np.any(candidate_hdmap_info_["centerline"]): # Do not visualize empty HDMap info
                             continue
                         # Centerline
-                        visualize_centerline(candidate_hdmap_info_["centerline"],color,"cl")
+                        visualize_centerline(candidate_hdmap_info_["centerline"],color,opacity,"cl")
                         # Left bound
-                        visualize_centerline(candidate_hdmap_info_["left_bound"],color,"bound")
+                        visualize_centerline(candidate_hdmap_info_["left_bound"],color,opacity,"bound")
                         # Right bound
-                        visualize_centerline(candidate_hdmap_info_["right_bound"],color,"bound")
+                        visualize_centerline(candidate_hdmap_info_["right_bound"],color,opacity,"bound")
                         
                     # Observation 
                 
                     ## Rotate trajectory
-                    
+
                     R = rotz2D(scene_yaw)
                     agent_track_full_xy = np.subtract(agent_track_full_xy,map_origin)
                     agent_track_full_xy = apply_rotation(agent_track_full_xy,R)
@@ -285,9 +341,9 @@ for split_name,features in splits_to_process.items():
                         agent_track_full_xy[:curr_obs_len, 1],
                         "-",
                         color=color,# color="#d33e4c",
-                        alpha=1,
+                        alpha=opacity,
                         linewidth=3,
-                        zorder=15,
+                        zorder=1,
                     )
 
                     final_x = agent_track_full_xy[curr_obs_len, 0]
@@ -298,17 +354,17 @@ for split_name,features in splits_to_process.items():
                         final_y,
                         "o",
                         color=color,#color="#d33e4c",
-                        alpha=1,
-                        markersize=10,
-                        zorder=15,
+                        alpha=opacity,
+                        markersize=5,
+                        zorder=1,
                     )
                     
                     plt.text(
                         final_x + 1,
                         final_y + 1,
                         f"{agent_index}",
-                        fontsize=12,
-                        zorder=20
+                        fontsize=5,
+                        zorder=2
                         )
                     
                     # Ground-truth prediction
@@ -318,9 +374,9 @@ for split_name,features in splits_to_process.items():
                         agent_track_full_xy[curr_obs_len:, 1],
                         "-",
                         color=color,#color="blue",
-                        alpha=1,
+                        alpha=opacity,
                         linewidth=3,
-                        zorder=15,
+                        zorder=1,
                     )
 
                     final_x = agent_track_full_xy[-1, 0]
@@ -331,9 +387,9 @@ for split_name,features in splits_to_process.items():
                         final_y,
                         "D",
                         color=color,#color="blue",
-                        alpha=1,
-                        markersize=10,
-                        zorder=15,
+                        alpha=opacity,
+                        markersize=5,
+                        zorder=1,
                     )
                     
                     # Uncomment this to obtain each particular each
@@ -352,21 +408,36 @@ for split_name,features in splits_to_process.items():
                 plt.xlabel("Map X")
                 plt.ylabel("Map Y")
                 # plt.axis("off")
-                # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
+                 
+                plt.title(f"Relevant obstacles = {relevant_obstacles}\n\
+                            Track fragments = {track_fragment_obstacles}\n\
+                            Unscored obstacles = {unscored_track_obstacles}\n\
+                            Scored obstacles = {scored_track_obstacles}\n\
+                            Focal obstacles = {focal_track_obstacles}")
+                            
                 plt.savefig(filename, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
                 plt.close('all')
-  
+
             preprocessed.append(sample)
-                
+            
             end = time.time()
 
             aux_time += (end-start)
             time_per_iteration = aux_time/(i+1)
-            
-            if i % check_every_n_files == 0:
+
+            NUM_SCENES = 10 # consider these iterations to compute the Estimated Time to Finalize
+            if ((i > 0 and i % check_every_n_files == 0)
+             or i == NUM_SCENES):
                 print(f"Time per iteration: {time_per_iteration} s. \n \
                         Estimated time to finish ({folders_remaining} files): {round(time_per_iteration*folders_remaining/60)} min")
                 
+                if i != NUM_SCENES:
+                    filename = os.path.join(DATASETS_DIR,"processed_map",f"{split_name}_map_data_rot_right_x_multi_agent_{i}_{len(folder_list)}.pkl")
+                    print(f"Save backup data in {filename}")
+                    
+                    with open(filename, 'wb') as f:
+                        pickle.dump(preprocessed, f)
+            
         # Save data as pkl file
         
         filename = os.path.join(DATASETS_DIR,"processed_map",f"{split_name}_map_data_rot_right_x_multi_agent.pkl")

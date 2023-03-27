@@ -108,6 +108,8 @@ class TMFModel(pl.LightningModule):
         parser_dataset.add_argument(
             "--BASE_DIR", type=str, default=BASE_DIR)
         parser_dataset.add_argument(
+            "--DATASET_DIR", type=str, default=DATASET_DIR)
+        parser_dataset.add_argument(
             "--LOG_DIR", type=str, default="non_specified")
         parser_dataset.add_argument(
             "--train_split", type=str, default=os.path.join(
@@ -122,26 +124,38 @@ class TMFModel(pl.LightningModule):
         # Social preprocess
         
         parser_dataset.add_argument(
-            "--train_split_pre", type=str, default=os.path.join(
+            "--train_split_pre_social", type=str, default=os.path.join(
                 BASE_DIR, DATASET_DIR, "processed_social", "train_pre_clean.pkl"))
         parser_dataset.add_argument(
-            "--val_split_pre", type=str, default=os.path.join(
+            "--val_split_pre_social", type=str, default=os.path.join(
                 BASE_DIR, DATASET_DIR, "processed_social", "val_pre_clean.pkl"))
         parser_dataset.add_argument(
-            "--test_split_pre", type=str, default=os.path.join(
+            "--test_split_pre_social", type=str, default=os.path.join(
                 BASE_DIR, DATASET_DIR, "processed_social", "test_pre_clean.pkl"))
         
         # Map preprocess
         
         parser_dataset.add_argument(
             "--train_split_pre_map", type=str, default=os.path.join(
-            BASE_DIR, DATASET_DIR, "processed_map", "train_map_data.pkl"))
+            BASE_DIR, DATASET_DIR, "processed_map", "train_map_data_rot_right_x_multi_agent.pkl"))
         parser_dataset.add_argument(
             "--val_split_pre_map", type=str, default=os.path.join(
-                BASE_DIR, DATASET_DIR, "processed_map", "val_map_data.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_map", "val_map_data_rot_right_x_multi_agent.pkl"))
         parser_dataset.add_argument(
             "--test_split_pre_map", type=str, default=os.path.join(
-                BASE_DIR, DATASET_DIR, "processed_map", "test_map_data.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_map", "test_map_data_rot_right_x_multi_agent.pkl"))
+        
+        # Whole preprocess
+        
+        parser_dataset.add_argument(
+            "--train_split_pre", type=str, default=os.path.join(
+            BASE_DIR, DATASET_DIR, "processed_full", "train_full_data_rot_right_x_multi_agent.pkl"))
+        parser_dataset.add_argument(
+            "--val_split_pre", type=str, default=os.path.join(
+                BASE_DIR, DATASET_DIR, "processed_full", "val_full_data_rot_right_x_multi_agent.pkl"))
+        parser_dataset.add_argument(
+            "--test_split_pre", type=str, default=os.path.join(
+                BASE_DIR, DATASET_DIR, "processed_full", "test_full_data_rot_right_x_multi_agent.pkl"))
         
         parser_dataset.add_argument("--reduce_dataset_size", type=int, default=0)
         parser_dataset.add_argument("--use_preprocessed", type=bool, default=False)

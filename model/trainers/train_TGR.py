@@ -19,10 +19,10 @@ https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
 
 python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 3 \
+                    --devices 0 \
                     --final_latent_info "fuse" \
                     --decoder "decoder_residual" \
-                    --exp_name "exp1_ganet_with_map"
+                    --exp_name "exp_1_multi_agent"
 """
 # --freeze_decoder True \
 # General purpose imports
@@ -77,7 +77,9 @@ def main():
     
     # Initialize train and val dataloaders
     
-    dataset = ArgoCSVDataset(args.train_split, args.train_split_pre, args, args.train_split_pre_map)
+    print("Initialize train split ...")
+    dataset = ArgoCSVDataset(args.train_split, args.train_split_pre_social, args, 
+                             input_preprocessed_map=args.train_split_pre_map, input_preprocessed_full=args.train_split_pre)
     train_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -87,8 +89,10 @@ def main():
         drop_last=False, # n multi-process loading, the drop_last argument drops the last non-full batch of each worker’s iterable-style dataset replica.
         shuffle=True
     )
-    
-    dataset = ArgoCSVDataset(args.val_split, args.val_split_pre, args, args.val_split_pre_map)
+
+    print("Initialize val split ...")
+    dataset = ArgoCSVDataset(args.val_split, args.val_split_pre_social, args, 
+                             input_preprocessed_map=args.val_split_pre_map, input_preprocessed_full=args.val_split_pre)
     val_loader = DataLoader(
         dataset,
         batch_size=args.val_batch_size,
@@ -96,7 +100,7 @@ def main():
         collate_fn=collate_fn_dict, # A custom collate_fn can be used to customize collation, convert the list of dictionaries to the dictionary of lists 
         pin_memory=True # For data loading, passing pin_memory=True to a DataLoader will automatically put the fetched data Tensors in pinned memory, and thus enables faster data transfer to CUDA-enabled GPUs.
     )
-    
+    pdb.set_trace()
     # Callbacks
     
     ## Model checkpoint

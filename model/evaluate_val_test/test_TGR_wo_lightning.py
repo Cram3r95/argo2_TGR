@@ -40,9 +40,9 @@ def main():
     args = parser.parse_args()
 
     if args.split == "val":
-        dataset = ArgoCSVDataset(args.val_split, args.val_split_pre, args, args.val_split_pre_map)
+        dataset = ArgoCSVDataset(args.val_split, args.val_split_pre_social, args, input_preprocessed_map=args.val_split_pre_map)
     else:
-        dataset = ArgoCSVDataset(args.test_split, args.test_split_pre, args, args.test_split_pre_map)
+        dataset = ArgoCSVDataset(args.test_split, args.test_split_pre_social, args, input_preprocessed_map=args.test_split_pre_map)
 
     data_loader = DataLoader(
         dataset,

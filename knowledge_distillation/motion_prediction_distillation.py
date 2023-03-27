@@ -56,7 +56,7 @@ def main():
 
     # Create data loaders for training and validation
     
-    dataset = ArgoCSVDataset(args.train_split, args.train_split_pre, args, args.train_split_pre_map)
+    dataset = ArgoCSVDataset(args.train_split, args.train_split_pre_social, args, input_preprocessed_map=args.train_split_pre_map)
     train_data_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -67,7 +67,7 @@ def main():
         shuffle=True
     )
     
-    dataset = ArgoCSVDataset(args.val_split, args.val_split_pre, args, args.val_split_pre_map)
+    dataset = ArgoCSVDataset(args.val_split, args.val_split_pre_social, args, input_preprocessed_map=args.val_split_pre_map)
     val_data_loader = DataLoader(
         dataset,
         batch_size=args.val_batch_size,

@@ -686,24 +686,16 @@ class MapFeaturesUtils:
 
             del candidate_hdmap_info[i]["centerline_length"] # Now this key is useless
           
-        # 6. (Optional) Get relative displacements
-
-        # rel_candidate_centerlines_array = np.array(candidate_centerlines)
-        
-        # if relative_displacements and candidate_centerlines:
-        #     candidate_centerlines_array = np.array(candidate_centerlines)
-
-        #     rel_candidate_centerlines_array = np.zeros(candidate_centerlines_array.shape) 
-        #     rel_candidate_centerlines_array[:, 1:, :] = candidate_centerlines_array[:, 1:, :] - candidate_centerlines_array[:, :-1, :] # Get displacements between consecutive steps
+        # 6. (Optional) Get displacements between consecutive steps
         
         for candidate_hdmap_info_ in candidate_hdmap_info:
             candidate_hdmap_info_["rel_centerline"] = np.zeros(candidate_hdmap_info_["centerline"].shape)
             candidate_hdmap_info_["rel_left_bound"] = np.zeros(candidate_hdmap_info_["left_bound"].shape)
             candidate_hdmap_info_["rel_right_bound"] = np.zeros(candidate_hdmap_info_["right_bound"].shape)
-            
-            candidate_hdmap_info_["rel_centerline"] = candidate_hdmap_info_["centerline"][1:,:] - candidate_hdmap_info_["centerline"][:-1,:]
-            candidate_hdmap_info_["rel_left_bound"] = candidate_hdmap_info_["left_bound"][1:,:] - candidate_hdmap_info_["left_bound"][:-1,:]
-            candidate_hdmap_info_["rel_right_bound"] = candidate_hdmap_info_["right_bound"][1:,:] - candidate_hdmap_info_["right_bound"][:-1,:]
+
+            candidate_hdmap_info_["rel_centerline"][1:,:] = candidate_hdmap_info_["centerline"][1:,:] - candidate_hdmap_info_["centerline"][:-1,:]
+            candidate_hdmap_info_["rel_left_bound"][1:,:] = candidate_hdmap_info_["left_bound"][1:,:] - candidate_hdmap_info_["left_bound"][:-1,:]
+            candidate_hdmap_info_["rel_right_bound"][1:,:] = candidate_hdmap_info_["right_bound"][1:,:] - candidate_hdmap_info_["right_bound"][:-1,:]
 
         # 7. Pad centerlines with zeros
         
@@ -1226,8 +1218,13 @@ def get_agent_velocity_and_acceleration(agent_seq, period=0.1, filter_traj="leas
     extended_xy_f = np.array([])
     num_points_trajectory = agent_seq.shape[0]
 
-    polynomial_order = 2
-
+    if agent_seq.shape[0] > 2:
+        polynomial_order = 2
+    elif agent_seq.shape[0] > 1:
+        polynomial_order = 1
+    else:
+        polynomial_order = 0
+    
     t = np.linspace(1, num_points_trajectory, num_points_trajectory)
     px = np.poly1d(np.polyfit(t,x,polynomial_order))
     py = np.poly1d(np.polyfit(t,y,polynomial_order))
@@ -1380,7 +1377,7 @@ def get_yaw(agent_xy, obs_len):
     
     Angles range from 0 (0º) to pi (180º), and -pi (180º) to -0 (360º)
     """
-    
+
     lane_dir_vector = agent_xy[obs_len-1,:] - agent_xy[obs_len-2,:]
     yaw = math.atan2(lane_dir_vector[1],lane_dir_vector[0])
 
