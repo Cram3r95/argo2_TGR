@@ -56,7 +56,7 @@ OBS_LEN = 50
 PRED_LEN = 60
 FREQUENCY = 10 # Hz
 PERIOD = float(1 / FREQUENCY) # s
-VIZ = False
+VIZ = True
 limit_qualitative_results = 150
 MODE = "test" # "train","test" 
 # if train -> compute the best candidate (oracle), only using the "competition" algorithm
@@ -394,14 +394,14 @@ for split_name,features in splits_to_process.items():
                     
                     # Uncomment this to obtain each particular each
                     
-                    # filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.png")
-                    # plt.xlabel("Map X")
-                    # plt.ylabel("Map Y")
-                    # # plt.axis("off")
-                    # # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
-                    # plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
-                    # plt.close('all')
-            
+                    filename_agent = os.path.join(SAVE_DIR,f"candidates_{MAX_CENTERLINES}_{scenario_id}_{agent_index}.pdf") # .png, .pdf
+                    plt.xlabel("Map X")
+                    plt.ylabel("Map Y")
+                    # plt.axis("off")
+                    # plt.title(f"Number of candidates = {len(candidate_centerlines)}")
+                    plt.savefig(filename_agent, bbox_inches='tight', facecolor="white", edgecolor='none', pad_inches=0)
+                    plt.close('all')
+            pdb.set_trace()
             if viz_: 
                 # Uncomment this to obtain the whole scene
                 

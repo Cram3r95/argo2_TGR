@@ -19,10 +19,10 @@ https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
 
 python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 0 \
+                    --devices 2 \
                     --final_latent_info "fuse" \
                     --decoder "decoder_residual" \
-                    --exp_name "exp_1_multi_agent"
+                    --exp_name "exp_3_multi_agent_actornet"
 """
 # --freeze_decoder True \
 # General purpose imports
@@ -120,7 +120,7 @@ def main():
     
     early_stop_callback = pl.callbacks.EarlyStopping(monitor="lr", 
                                                      patience=5, 
-                                                     divergence_threshold=args.min_lr_conf,
+                                                     divergence_threshold=args.min_lr,
                                                      verbose=False, 
                                                      mode="min")
     

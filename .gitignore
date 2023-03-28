@@ -133,3 +133,4 @@ __pycache__/
 dataset/
 submission/ 
 preprocess/**/*.png
+preprocess/**/*.pdf

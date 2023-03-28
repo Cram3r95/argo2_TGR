@@ -12,7 +12,7 @@ import sys
 import os
 import pdb
 
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Tuple
 
 if str(sys.version_info[0])+"."+str(sys.version_info[1]) >= "3.9": # Python >= 3.9
     from math import gcd
@@ -60,31 +60,33 @@ class TMFModel(pl.LightningModule):
         ## Social
         
         self.linear_embedding = LinearEmbedding(self.args)
-        self.pos_encoder= PositionalEncoding1D(self.args)
+        self.pos_encoder = PositionalEncoding1D(self.args)
         self.encoder_transformer = EncoderTransformer(self.args)
+        # self.encoder_actornet = ActorNet(self.args)
         
         # ## Physical 
         
-        # if self.args.use_map:
+        if self.args.use_map:
             
-        #     self.map_sub_net = MapSubNet(self.args)
+            # self.map_sub_net = MapSubNet(self.args)
+            self.map_encoder = BoundariesEncoder(self.args)
+                        
+            assert self.args.social_latent_size == self.args.map_latent_size
             
-        #     assert self.args.social_latent_size == self.args.map_latent_size
-            
-        #     if self.args.final_latent_info == "concat":
-        #         self.args.decoder_latent_size = self.args.social_latent_size + self.args.map_latent_size
-        #     elif self.args.final_latent_info == "fuse":
-        #         self.A2L_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
-        #         self.L2A_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+            if self.args.final_latent_info == "concat":
+                self.args.decoder_latent_size = self.args.social_latent_size + self.args.map_latent_size
+            # elif self.args.final_latent_info == "fuse":
+            #     self.A2L_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+            #     self.L2A_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
     
-        #         self.A2L_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
-        #         self.L2A_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+            #     self.A2L_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+            #     self.L2A_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
                 
-        #         self.args.decoder_latent_size = self.args.social_latent_size
-        #     else:
-        #         raise AssertionError
-        # else:
-        #     self.args.decoder_latent_size = self.args.social_latent_size
+            #     self.args.decoder_latent_size = self.args.social_latent_size
+            # else:
+            #     raise AssertionError
+        else:
+            self.args.decoder_latent_size = self.args.social_latent_size
         
         self.args.decoder_latent_size = self.args.social_latent_size
         
@@ -101,8 +103,6 @@ class TMFModel(pl.LightningModule):
         self.validation_type = "single-agent" # single-agent = only focal track (category 3)
                                               # multi-agent = both focal track and scored tracks (category 2 & 3)
         self.loss_lane = LossLane(self.args)
-        self.initial_lr_conf = self.args.initial_lr_conf
-        self.min_lr_conf = self.args.min_lr_conf
         self.save_model_script = True
 
     @staticmethod
@@ -166,15 +166,17 @@ class TMFModel(pl.LightningModule):
         parser_dataset.add_argument("--align_image_with_target_x", type=bool, default=True)
 
         parser_training = parent_parser.add_argument_group("training")
-        parser_training.add_argument("--num_epochs", type=int, default=200)
+        parser_training.add_argument("--num_epochs", type=int, default=50)
         parser_training.add_argument("--check_val_every_n_epoch", type=int, default=10)
         parser_training.add_argument("--lr_values", type=list, default=[1e-3, 1e-4, 1e-3 , 1e-4])
         parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 45])
-        parser_training.add_argument("--initial_lr_conf", type=float, default=5e-5)
-        parser_training.add_argument("--min_lr_conf", type=float, default=1e-6)
+        parser_training.add_argument("--initial_lr", type=float, default=1e-3)
+        parser_training.add_argument("--scheduler_reduce_factor", type=float, default=0.1)
+        parser_training.add_argument("--scheduler_patience", type=float, default=10)
+        parser_training.add_argument("--min_lr", type=float, default=1e-6) 
         parser_training.add_argument("--wd", type=float, default=0.001)
-        parser_training.add_argument("--batch_size", type=int, default=128)
-        parser_training.add_argument("--val_batch_size", type=int, default=128)
+        parser_training.add_argument("--batch_size", type=int, default=32)
+        parser_training.add_argument("--val_batch_size", type=int, default=32)
         parser_training.add_argument("--workers", type=int, default=0) # TODO: Not working with >= 0
         parser_training.add_argument("--val_workers", type=int, default=0)
         parser_training.add_argument("--gpus", type=int, default=1)
@@ -190,7 +192,7 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--num_centerlines", type=int, default=6)
         parser_model.add_argument("--num_attention_heads", type=int, default=8)
         parser_model.add_argument("--apply_dropout", type=float, default=0.2)
-        parser_model.add_argument("--data_aug_gaussian_noise", type=float, default=0.01)
+        parser_model.add_argument("--data_aug_gaussian_noise", type=float, default=0.05)
         parser_model.add_argument("--social_latent_size", type=int, default=128)
         parser_model.add_argument("--map_latent_size", type=int, default=128)
         parser_model.add_argument("--final_latent_info", type=str, default="non_specified")
@@ -203,22 +205,36 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--mod_full_unfreeze_epoch", type=int, default=60)
         parser_model.add_argument("--reg_loss_weight", type=float, default=1) # xy predictions
         parser_model.add_argument("--cls_loss_weight", type=float, default=1) # classification = confidences
-        parser_model.add_argument("--epsilon", type=float, default=0.00000001)
-
+        parser_model.add_argument("--epsilon", type=float, default=0.0000000001)
+        parser_model.add_argument("--mgn", type=float, default=0.2) # ?
+        parser_model.add_argument("--cls_th", type=float, default=2.0) # ?
+        parser_model.add_argument("--cls_ignore", type=float, default=0.2) # ?
+        parser_model.add_argument("--cls_coef", type=float, default=3.0) # ?
+        parser_model.add_argument("--reg_coef", type=float, default=1.0) # ?
+  
         return parent_parser
 
-    def add_noise(self, input, factor=1):
+    def add_noise(self, input_tensor, factor=1):
         """_summary_
         Args:
-            input (_type_): _description_
+            input_tensor (_type_): _description_
             factor (int, optional): _description_. Defaults to 1.
         Returns:
             _type_: _description_
         """
+        
+        if self.args.align_image_with_target_x:
+            input_tensor_dim = [int(x) for x in input_tensor.shape]
+            dim = (*input_tensor_dim[:-1],1)
+        
+            noise_x = factor * torch.randn(dim).to(input_tensor)
+            noise_y = factor/2 * torch.randn(dim).to(input_tensor) # Reduce data augmentation in y-axis
+            noise = torch.cat([noise_x,noise_y],-1)
+        else:
+            noise = factor * torch.randn(input_tensor.shape).to(input_tensor)
 
-        noise = factor * torch.randn(input.shape).to(input)
-        noisy_input = input + noise
-        return noisy_input
+        noisy_input_tensor = input_tensor + noise
+        return noisy_input_tensor
     
     def forward(self, batch):
         # batch
@@ -274,23 +290,27 @@ class TMFModel(pl.LightningModule):
         
         ### Data augmentation (TODO: It should be in the collate_fn_dict function, in the DataLoader)
 
-        # if self.training:
-        #     actor_raw_features[:,:,:2] = self.add_noise(actor_raw_features[:,:,:2], self.args.data_aug_gaussian_noise)
-        #     centers_cat = self.add_noise(centers_cat, self.args.data_aug_gaussian_noise)
+        if self.training:
+            actor_raw_features[:,:,:2] = self.add_noise(actor_raw_features[:,:,:2], self.args.data_aug_gaussian_noise)
+            centers_cat = self.add_noise(centers_cat, self.args.data_aug_gaussian_noise)
         
         linear_output = self.linear_embedding(actor_raw_features)
         pos_encoding = self.pos_encoder(linear_output)
         pos_encoding = pos_encoding + linear_output
 
         agents_features = self.encoder_transformer(pos_encoding, agents_per_sample) # Deep social features
+        # actors_actornet, actor_idcs_actornet = actor_gather(gpu(batch["displ"]))
+        # actor_ctrs_actornet = gpu(batch["centers"])
+        # agents_features = self.encoder_actornet(actor_raw_features.transpose(1,2),actor_ctrs_actornet)
         
         ## Physical (map)
       
-        dedoder_features = self.agent_gnn(agents_features, centers_cat, agents_per_sample)
+        decoder_features = self.agent_gnn(agents_features, centers_cat, agents_per_sample)
+        decoder_features = torch.cat(decoder_features,0) # Concatenate all relevant agents
         
         # Decoder
-        pdb.set_trace()
-        out = self.decoder(dedoder_features, actor_idcs, centers)
+
+        out = self.decoder(decoder_features, actor_idcs, centers)
         
         ## Iterate over each batch and transform predictions into the global coordinate frame
         
@@ -300,8 +320,8 @@ class TMFModel(pl.LightningModule):
             out["reg"][i] = torch.matmul(out["reg"][i], rot[i]) + orig[i].view(
                 1, 1, 1, -1
             )
-            
-        pdb.set_trace()
+        
+        out["focal_agent_id"] = focal_agent_id # Store focal agent id (only for single-agent validation)
 
         return out
 
@@ -310,13 +330,13 @@ class TMFModel(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), 
                                         weight_decay=self.args.wd,
-                                        lr=self.initial_lr)
+                                        lr=self.args.initial_lr)
             
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                                 mode='min',
-                                                                factor=0.5,
-                                                                patience=5,
-                                                                min_lr=1e-6,
+                                                                factor=self.args.scheduler_reduce_factor,
+                                                                patience=self.args.scheduler_patience,
+                                                                min_lr=self.args.min_lr,
                                                                 verbose=True)
 
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "ade_val"}
@@ -340,7 +360,6 @@ class TMFModel(pl.LightningModule):
             _type_: _description_
         """
         out = self.forward(train_batch)
-        pdb.set_trace()
         loss = self.loss_lane(out, train_batch)
 
         self.log("loss_train", loss["loss"], sync_dist=True)
@@ -349,53 +368,60 @@ class TMFModel(pl.LightningModule):
 
     def validation_step(self, val_batch, batch_idx):
         out = self.forward(val_batch)
-        pdb.set_trace()
-        if self.validation_type == "single-agent":
-            loss = self.loss_lane(out, val_batch)
-        elif self.validation_type == "multi-agent":
-            loss = self.loss_lane(out, val_batch)
+        loss = self.loss_lane(out, val_batch, validation_type=self.validation_type)
             
         self.log("loss_val", loss["loss"], sync_dist=True)
 
-        # Extract target agent only
-        # pdb.set_trace()
-        # pred = [x[0].detach().cpu().numpy() for x in out["reg"]]
+        # Transform to numpy 
+        
         pred = torch.cat(out["reg"],0)
         pred = pred.detach().cpu().numpy()
-        # conf = [x[0].detach().cpu().numpy() for x in out["cls"]]
-        conf = torch.stack(out["cls"],0)
-        conf = conf.detach().cpu().numpy()
-        gt = [x[0].detach().cpu().numpy() for x in val_batch["gt"]]
-        has_preds = [x[0] for x in val_batch["has_preds"]]
 
-        # TODO: Get current script name to save
-        # if self.save_model_script:
-        #     
-        #     model_filename = os.path.join(self.args.BASE_DIR,
-        #                                   self.args.MODEL_DIR,
-        #                                   "TFMF_TGR.py")
-        #     os.system(f"cp {model_filename} {self.args.LOG_DIR}")
-        #     self.save_model_script = False
+        conf = torch.cat(out["cls"],0)
+        conf = conf.detach().cpu().numpy()
+        
+        gt = torch.cat([x for x in val_batch["gt"]])
+        gt = gt.detach().cpu().numpy()
+        has_preds = torch.cat([x for x in val_batch["has_preds"]]) # Do not transform to np here
+
+        if self.save_model_script:
+            model_filename = os.path.join(self.args.BASE_DIR,
+                                          self.args.MODEL_DIR,
+                                          os.path.basename(__file__))
+            os.system(f"cp {model_filename} {self.args.LOG_DIR}")
+            self.save_model_script = False
             
         return {"predictions": pred, 
                 "confidences": conf,
                 "groundtruth": gt,
                 "has_preds": has_preds} # = validation_outputs
-        
+                                        #          |
+                                        #          v
     def validation_epoch_end(self, validation_outputs):
         # Extract predictions
-        pred = [out["predictions"] for out in validation_outputs]
-        pred = np.concatenate(pred, 0) 
-        conf = [out["confidences"] for out in validation_outputs]
-        conf = np.concatenate(conf, 0)
-        
-        has_preds = [out["has_preds"] for out in validation_outputs]
-        has_preds = sum(has_preds,[])
-        # has_preds = np.concatenate(has_preds, 0)
-        gt = [out["groundtruth"] for out in validation_outputs]
-        gt = np.concatenate(gt, 0) 
 
-        ade1, fde1, ade, fde, brier_fde, min_idcs = pred_metrics(pred, gt, has_preds, conf)
+        if self.validation_type == "single-agent":
+            pred = [out["predictions"][0] for out in validation_outputs] # Only take the first agent (0) of each scenario
+            pred = np.stack(pred, 0) 
+            conf = [out["confidences"][0] for out in validation_outputs]
+            conf = np.stack(conf, 0)
+            
+            gt = [out["groundtruth"][0] for out in validation_outputs]
+            gt = np.stack(gt, 0) 
+            has_preds = [out["has_preds"][0] for out in validation_outputs]
+            has_preds = torch.stack(has_preds, 0) 
+        else:
+            pred = [out["predictions"] for out in validation_outputs]
+            pred = np.concatenate(pred, 0) 
+            conf = [out["confidences"] for out in validation_outputs]
+            conf = np.concatenate(conf, 0)
+            
+            gt = [out["groundtruth"] for out in validation_outputs]
+            gt = np.concatenate(gt, 0) 
+            has_preds = [out["has_preds"] for out in validation_outputs]
+            has_preds = torch.concatenate(has_preds, 0)     
+
+        ade1, fde1, ade, fde, brier_fde, min_idcs = pred_metrics(pred, conf, gt, has_preds)
 
         print("ade1 %2.4f, fde1 %2.4f, ade %2.4f, fde %2.4f, brier_fde %2.4f" % (ade1, fde1, ade, fde, brier_fde))
         print()
@@ -660,9 +686,8 @@ class PredNet(nn.Module):
             reg[idcs] = reg[idcs] + ctrs
 
         dest_ctrs = reg[:, :, -1].detach()
-        # feats = self.att_dest(actors, torch.cat(actor_ctrs, 0), dest_ctrs, actor_idcs) 
-        feats = self.att_dest(actors, torch.stack(actor_ctrs), dest_ctrs, actor_idcs) 
-        cls = self.cls(feats).view(-1, self.config["num_mods"])
+        feats = self.att_dest(actors, torch.cat(actor_ctrs, 0), dest_ctrs, actor_idcs) 
+        cls = self.cls(feats).view(-1, self.num_modes)
         cls = self.softmax(cls)
         
         cls, sort_idcs = cls.sort(1, descending=True)
@@ -678,7 +703,7 @@ class PredNet(nn.Module):
             ctrs = actor_ctrs[i].view(-1, 1, 1, 2)
             out["cls"].append(cls[idcs])
             out["reg"].append(reg[idcs])
-        return out, feats
+        return out
     
 class myAttDest(nn.Module):
     def __init__(self, n_agt: int, K):
@@ -703,7 +728,6 @@ class myAttDest(nn.Module):
         for i in range(len(actor_idcs)):
             idcs = actor_idcs[i]
             ctrs.append(dest_ctrs[idcs])
-
         for k in range(num_mods):
             dest_ctr = dest_ctrs[:,k,:]
             dist = (agt_ctrs - dest_ctr).view(-1, 2)
@@ -715,7 +739,8 @@ class myAttDest(nn.Module):
             else:
                 k_actors = torch.cat((k_actors, actors), 1)
         k_actors = k_actors.view(-1, n_agt)
-        # agts = self.K_agt(k_actors)
+        #agts = self.K_agt(k_actors)
+        
         return k_actors
 
 # Loss and metrics functions
@@ -726,39 +751,57 @@ class LossLane(nn.Module):
         self.args = args
         self.pred_loss = PredLoss(self.args)
 
-    def forward(self, out: Dict, data: Dict) -> Dict:
+    def forward(self, out: Dict, data: Dict, validation_type: str = None) -> Dict:
 
         # Add here 'has_preds' -> A mask to know if the object was observed in that frame
-        
+
         future_trajs = gpu(data["fut_trajs"])
         has_preds = [future_trajs_[:,:,-1].bool() for future_trajs_ in future_trajs]
         data["has_preds"] = has_preds
-        # pdb.set_trace()
-        loss_out = self.pred_loss(out, gpu(data["gt"]), gpu(data["has_preds"]))
 
-        loss_out["loss"] = loss_out["cls_loss"] / (loss_out["num_cls"] + 1e-10) \
-                         + loss_out["reg_loss"] / (loss_out["num_reg"] + 1e-10)
+        loss_out = self.pred_loss(out, gpu(data["gt"]), gpu(data["has_preds"]), 
+                                  validation_type=validation_type)
+
+        loss_out["loss"] = loss_out["cls_loss"] / (loss_out["num_cls"] + self.args.epsilon) \
+                         + loss_out["reg_loss"] / (loss_out["num_reg"] + self.args.epsilon)
         return loss_out 
 
 class PredLoss(nn.Module):
     def __init__(self, args):
         super(PredLoss, self).__init__()
         self.args = args
+        
         self.reg_loss = nn.SmoothL1Loss(reduction="sum")
+   
+    def forward(self, out: Dict[str, List[Tensor]], 
+                      gt_preds_: List[Tensor], 
+                      has_preds_: List[Tensor],
+                      validation_type: str = None)\
+    -> Dict[str, Union[Tensor, int]]:
+        """_summary_
 
-    def forward(self, out: Dict[str, List[Tensor]], gt_preds: List[Tensor], has_preds_: List[Tensor]) -> Dict[str, Union[Tensor, int]]:
-        cls_, reg_ = out["cls"], out["reg"]
-        # cls = torch.cat([x for x in cls], 0)
-        # reg = torch.cat([x for x in reg], 0)
-        # gt_preds = torch.cat([x for x in gt_preds], 0)
-        # has_preds = torch.cat([x for x in has_preds], 0)
-
-        cls = torch.stack([x for x in cls_], 0)
-        reg = torch.cat([x for x in reg_], 0)
-        gt_preds = torch.cat([x for x in gt_preds], 0)
-        gt_preds = gt_preds[out["focal_agent_id"],:,:]
-        has_preds = torch.cat([x for x in has_preds_], 0)
-        has_preds = has_preds[out["focal_agent_id"],:]
+        Returns:
+            _type_: _description_
+        """
+        # TODO: Check this function
+        
+        if validation_type == "single-agent": # Only single-agent validation (focal track)
+            reg = torch.stack([x[0] for x in out["reg"]], 0)
+            cls = torch.stack([x[0] for x in out["cls"]], 0)
+            
+            gt_preds = torch.cat([x for x in gt_preds_], 0)
+            gt_preds = gt_preds[out["focal_agent_id"],:,:]
+            has_preds = torch.cat([x for x in has_preds_], 0)
+            has_preds = has_preds[out["focal_agent_id"],:]
+        elif validation_type == "multi-agent": # Multi-agent validation (focal-track + scored tracks) 
+            # TODO: Not used at this moment, you should obtain only those objects with category 2 & 3
+            pdb.set_trace()
+        else: # train (prediction of all agents -> category 1, 2 and 3)
+            reg = torch.cat([x for x in out["reg"]], 0)
+            cls = torch.cat([x for x in out["cls"]], 0)
+            
+            gt_preds = torch.cat([x for x in gt_preds_], 0)
+            has_preds = torch.cat([x for x in has_preds_], 0)
 
         loss_out = dict()
         zero = 0.0 * (cls.sum() + reg.sum())
@@ -767,8 +810,7 @@ class PredLoss(nn.Module):
         loss_out["reg_loss"] = zero.clone()
         loss_out["num_reg"] = 0
 
-        num_mods, num_preds = self.config["num_mods"], self.config["num_preds"]
-        # assert(has_preds.all())
+        num_mods, num_preds = self.args.num_modes, self.args.pred_len
 
         last = has_preds.float() + 0.1 * torch.arange(num_preds).float().to(
             has_preds.device
@@ -798,33 +840,35 @@ class PredLoss(nn.Module):
         row_idcs = torch.arange(len(min_idcs)).long().to(min_idcs.device)
 
         mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
-        mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
-        mask1 = dist - min_dist.view(-1, 1) > self.config["cls_ignore"]
+        mask0 = (min_dist < self.args.cls_th).view(-1, 1)
+        mask1 = dist - min_dist.view(-1, 1) > self.args.cls_ignore
         mgn = mgn[mask0 * mask1]
-        mask = mgn < self.config["mgn"]
-        coef = self.config["cls_coef"]
+        mask = mgn < self.args.mgn
+        coef = self.args.cls_coef
         loss_out["cls_loss"] += coef * (
-            self.config["mgn"] * mask.sum() - mgn[mask].sum()
+            self.args.mgn * mask.sum() - mgn[mask].sum()
         )
         loss_out["num_cls"] += mask.sum().item()
 
         reg = reg[row_idcs, min_idcs]
-        coef = self.config["reg_coef"]
+        coef = self.args.reg_coef
         loss_out["reg_loss"] += coef * self.reg_loss(
             reg[has_preds], gt_preds[has_preds]
         )
         loss_out["num_reg"] += has_preds.sum().item()
+
         return loss_out
      
-def pred_metrics(preds, gt_preds, has_preds_, preds_cls):
-    #assert has_preds.all()
-
+def pred_metrics(preds, preds_cls, gt_preds, has_preds):
+    """
+    """
+ 
     preds = np.asarray(preds, np.float32)
-    gt_preds = np.asarray(gt_preds, np.float32)
     cls = np.asarray(preds_cls, np.float32)
-    m, num_mods, num_preds, _ = preds.shape
-    # has_preds = torch.cat([x for x in has_preds_], 0)
-    has_preds = torch.stack(has_preds_).detach().cpu()
+    gt_preds = np.asarray(gt_preds, np.float32)
+    has_preds = has_preds.detach().cpu()
+
+    num_agents, num_mods, num_preds, data_dim = preds.shape
 
     last = has_preds.float() + 0.1 * torch.arange(num_preds).float().to(has_preds.device) / float(num_preds)
     max_last, last_idcs = last.max(1)
@@ -833,16 +877,18 @@ def pred_metrics(preds, gt_preds, has_preds_, preds_cls):
     err = np.sqrt(((preds - np.expand_dims(gt_preds, 1)) ** 2).sum(3))
     
     row_idcs_last = np.arange(len(last_idcs)).astype(np.int64) 
-    ade1 =  np.asarray([err[i, 0, :last_idcs[i]].mean() for i in range(m)]).mean()
+    ade1 =  np.asarray([err[i, 0, :last_idcs[i]].mean() for i in range(num_agents)]).mean()
     fde1 = err[row_idcs_last, 0, last_idcs].mean()
+    
     #cls = softmax(cls, axis=1)
     min_idcs = err[row_idcs_last, :, last_idcs].argmin(1)
     row_idcs = np.arange(len(min_idcs)).astype(np.int64)
     err = err[row_idcs, min_idcs]
     cls = cls[row_idcs, min_idcs]
-    ade = np.asarray([err[i, :last_idcs[i]].mean() for i in range(m)]).mean()
+    
+    ade = np.asarray([err[i, :last_idcs[i]].mean() for i in range(num_agents)]).mean()
     fde = err[row_idcs_last, last_idcs].mean()
-    one_arr = np.ones(m)
+    one_arr = np.ones(num_agents)
     brier_fde = (err[row_idcs_last, last_idcs] + (one_arr-cls)**2).mean()
 
     return ade1, fde1, ade, fde, brier_fde, min_idcs
@@ -869,9 +915,226 @@ def get_actor_ids(actors: List[Tensor]) -> List[Tensor]:
     actor_idcs = []
     count = 0
     for i in range(batch_size):
-        idcs = torch.arange(count, count + num_actors[i]).to(actors.device)
+        idcs = torch.arange(count, count + num_actors[i]).to(actors[0].device)
         actor_idcs.append(idcs)
         count += num_actors[i]
 
     return actor_idcs
+
+# GANet layers
+
+class Conv1d(nn.Module):
+    def __init__(self, n_in, n_out, kernel_size=3, stride=1, norm='GN', ng=32, act=True, groups=1):
+        super(Conv1d, self).__init__()
+        assert(norm in ['GN', 'BN', 'SyncBN'])
+
+        self.conv = nn.Conv1d(n_in, n_out, kernel_size=kernel_size, padding=(int(kernel_size) - 1) // 2, stride=stride, bias=False, groups=groups)
+
+        if norm == 'GN':
+            self.norm = nn.GroupNorm(gcd(ng, n_out), n_out)
+        elif norm == 'BN':
+            self.norm = nn.BatchNorm1d(n_out)
+        else:
+            exit('SyncBN has not been added!')
+
+        self.relu = nn.ReLU(inplace=True)
+        self.act = act
+
+    def forward(self, x):
+        out = self.conv(x)
+        out = self.norm(out)
+        if self.act:
+            out = self.relu(out)
+        return out
+
+class no_pad_Res1d(nn.Module):
+    def __init__(self, n_in, n_out, kernel_size=3, stride=1, norm='GN', ng=32, act=True, groups=1):
+        super(no_pad_Res1d, self).__init__()
+        assert(norm in ['GN', 'BN', 'SyncBN'])
+        padding = (int(kernel_size) - 1) // 2
+        self.conv1 = nn.Conv1d(n_in, n_out, kernel_size=kernel_size, stride=stride, padding=0, bias=False, groups=groups)
+        self.conv2 = nn.Conv1d(n_out, n_out, kernel_size=kernel_size, padding=padding, bias=False, groups=groups)
+        self.relu = nn.ReLU(inplace = True)
+
+        # All use name bn1 and bn2 to load imagenet pretrained weights
+        if norm == 'GN':
+            self.bn1 = nn.GroupNorm(gcd(ng, n_out), n_out)
+            self.bn2 = nn.GroupNorm(gcd(ng, n_out), n_out)
+        elif norm == 'BN':
+            self.bn1 = nn.BatchNorm1d(n_out)
+            self.bn2 = nn.BatchNorm1d(n_out)
+        else:
+            exit('SyncBN has not been added!')
+
+        if stride != 1 or n_out != n_in:
+            if norm == 'GN':
+                self.downsample = nn.Sequential(
+                        nn.Conv1d(n_in, n_out, kernel_size=1, stride=stride, bias=False, groups=groups),
+                        nn.GroupNorm(gcd(ng, n_out), n_out))
+            elif norm == 'BN':
+                self.downsample = nn.Sequential(
+                        nn.Conv1d(n_in, n_out, kernel_size=1, stride=stride, bias=False, groups=groups),
+                        nn.BatchNorm1d(n_out))
+            else:
+                exit('SyncBN has not been added!')
+        else:
+            self.downsample = None
+
+        self.act = act
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            x = self.downsample(x)
+
+        out += x[:,:,2:]
+        if self.act:
+            out = self.relu(out)
+        return out
+
+class Res1d(nn.Module):
+    def __init__(self, n_in, n_out, kernel_size=3, stride=1, norm='GN', ng=32, act=True, groups=1):
+        super(Res1d, self).__init__()
+        assert(norm in ['GN', 'BN', 'SyncBN'])
+        padding = (int(kernel_size) - 1) // 2
+        self.conv1 = nn.Conv1d(n_in, n_out, kernel_size=kernel_size, stride=stride, padding=padding, bias=False, groups=groups)
+        self.conv2 = nn.Conv1d(n_out, n_out, kernel_size=kernel_size, padding=padding, bias=False, groups=groups)
+        self.relu = nn.ReLU(inplace = True)
+
+        # All use name bn1 and bn2 to load imagenet pretrained weights
+        if norm == 'GN':
+            self.bn1 = nn.GroupNorm(gcd(ng, n_out), n_out)
+            self.bn2 = nn.GroupNorm(gcd(ng, n_out), n_out)
+        elif norm == 'BN':
+            self.bn1 = nn.BatchNorm1d(n_out)
+            self.bn2 = nn.BatchNorm1d(n_out)
+        else:
+            exit('SyncBN has not been added!')
+
+        if stride != 1 or n_out != n_in:
+            if norm == 'GN':
+                self.downsample = nn.Sequential(
+                        nn.Conv1d(n_in, n_out, kernel_size=1, stride=stride, bias=False, groups=groups),
+                        nn.GroupNorm(gcd(ng, n_out), n_out))
+            elif norm == 'BN':
+                self.downsample = nn.Sequential(
+                        nn.Conv1d(n_in, n_out, kernel_size=1, stride=stride, bias=False, groups=groups),
+                        nn.BatchNorm1d(n_out))
+            else:
+                exit('SyncBN has not been added!')
+        else:
+            self.downsample = None
+
+        self.act = act
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            x = self.downsample(x)
+
+        out += x
+        if self.act:
+            out = self.relu(out)
+        return out
+    
+class ActorNet(nn.Module):
+    """
+    Actor feature extractor with Conv1D
+    """
+    def __init__(self, args):
+        super(ActorNet, self).__init__()
+        self.args = args
+        norm = "GN"
+        ng = 1
+
+        n_in = self.args.num_social_features
+        n_out = [32, 32, 64, 128]
+        blocks = [no_pad_Res1d, Res1d, Res1d, Res1d]
+        num_blocks = [1, 2, 2, 2]
+        # num_blocks = [1, 1, 1, 1]
+
+        groups = []
+        for i in range(len(num_blocks)):
+            group = []
+            if i == 0:
+                group.append(blocks[i](n_in, n_out[i], norm=norm, ng=ng))
+            else:
+                group.append(blocks[i](n_in, n_out[i], stride=2, norm=norm, ng=ng))
+
+            for j in range(1, num_blocks[i]):
+                group.append(blocks[i](n_out[i], n_out[i], norm=norm, ng=ng))
+            groups.append(nn.Sequential(*group))
+            n_in = n_out[i]
+        self.groups = nn.ModuleList(groups)
+
+        n = self.args.social_latent_size
+        lateral = []
+        for i in range(len(n_out)):
+            lateral.append(Conv1d(n_out[i], n, norm=norm, ng=ng, act=False))
+        self.lateral = nn.ModuleList(lateral)
+        
+        ctrs_in = 2
+        self.lstm_h0_init_function = nn.Linear(ctrs_in, n, bias=False)
+        self.lstm_encoder = nn.LSTM(n, n, batch_first=True)
+        
+        self.output = Res1d(n, n, norm=norm, ng=ng)
+        
+    def forward(self, actors: Tensor, actor_ctrs) -> Tensor:
+        actor_ctrs = torch.cat(actor_ctrs, 0)
+        
+        actors_aux = torch.zeros(actors.shape[0],actors.shape[1],50).to(actors)
+        actors_aux[:,:,1:] = actors
+        actors_aux[:,2,0] = actors[:,2,0]
+        
+        out = actors_aux
+        M,d,L = actors.shape
+
+        outputs = []
+        for i in range(len(self.groups)):   
+            out = self.groups[i](out)
+            outputs.append(out)
+
+        out = self.lateral[-1](outputs[-1])
+        for i in range(len(outputs) - 2, -1, -1):
+            out = F.interpolate(out, scale_factor=2, mode="linear", align_corners=False)
+            out += self.lateral[i](outputs[i])    
+        out = self.output(out)
+        out_init = out[:, :, -1]
+    
+        #1. TODO fuse map data as init hidden and cell state
+        h0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, self.args.social_latent_size)
+        c0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, self.args.social_latent_size)
+        #h0 = torch.zeros(1, M, self.args.social_latent_size).cuda()
+        #c0 = torch.zeros(1, M, self.args.social_latent_size).cuda()
+        out = out.transpose(1, 2).contiguous()
+        output, (hn, cn) = self.lstm_encoder(out, (h0, c0))
+        out_lstm = hn.contiguous().view(M, self.args.social_latent_size)
+        out = out_lstm + out_init
+
+        return out
+    
+def actor_gather(actors: List[Tensor]) -> Tuple[Tensor, List[Tensor]]:
+    batch_size = len(actors)
+    num_actors = [len(x) for x in actors]
+
+    actors = [x.transpose(1, 2) for x in actors]
+    actors = torch.cat(actors, 0)
+
+    actor_idcs = []
+    count = 0
+    for i in range(batch_size):
+        idcs = torch.arange(count, count + num_actors[i]).to(actors.device)
+        actor_idcs.append(idcs)
+        count += num_actors[i]
+    return actors, actor_idcs
 
