@@ -55,7 +55,8 @@ MODEL_DIR = "model/models"
 
 from data.argoverse.argo_csv_dataset import ArgoCSVDataset
 from data.argoverse.utils.torch_utils import collate_fn_dict
-from model.models.TFMF_TGR import TMFModel
+# from model.models.TFMF_TGR import TMFModel
+from model.models.TFMF_TGR_multi_agent import TMFModel
 # from model.models.TFMF_TGR_ganet import TMFModel
 
 # Make newly created directories readable, writable and descendible for everyone (chmod 777)
@@ -100,7 +101,7 @@ def main():
         collate_fn=collate_fn_dict, # A custom collate_fn can be used to customize collation, convert the list of dictionaries to the dictionary of lists 
         pin_memory=True # For data loading, passing pin_memory=True to a DataLoader will automatically put the fetched data Tensors in pinned memory, and thus enables faster data transfer to CUDA-enabled GPUs.
     )
-    pdb.set_trace()
+
     # Callbacks
     
     ## Model checkpoint

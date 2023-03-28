@@ -55,8 +55,8 @@ def load_pretrain(net, pretrain_dict):
 
 def gpu(data):
     """
-    Transfer tensor in `data` to gpu recursively
-    `data` can be dict, list or tuple
+    Transfer tensor in "data" to gpu recursively
+    "data" can be dict, list or tuple
     """
     if isinstance(data, list) or isinstance(data, tuple):
         data = [gpu(x) for x in data]

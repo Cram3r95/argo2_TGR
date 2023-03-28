@@ -58,10 +58,9 @@ class TMFModel(pl.LightningModule):
         
         ## Social
         
-        self.linear_embedding = LinearEmbedding(3,self.args)
-        self.pos_encoder= PositionalEncoding1D(self.args.social_latent_size)
+        self.linear_embedding = LinearEmbedding(self.args)
+        self.pos_encoder= PositionalEncoding1D(self.args)
         self.encoder_transformer = EncoderTransformer(self.args)
-        self.agent_gnn = AgentGNN(self.args)
         
         ## Physical 
         
@@ -85,7 +84,13 @@ class TMFModel(pl.LightningModule):
                 raise AssertionError
         else:
             self.args.decoder_latent_size = self.args.social_latent_size
-            
+        
+        ## Global interaction
+        
+        self.agent_gnn = AgentGNN(self.args)
+        
+        # Decoder
+           
         if self.args.decoder == "decoder_residual": self.decoder = DecoderResidual(self.args)
         elif self.args.decoder == "decoder_temporal": self.decoder = Temporal_Multimodal_Decoder(self.args)
 
@@ -179,6 +184,8 @@ class TMFModel(pl.LightningModule):
         parser_model = parent_parser.add_argument_group("model")
         parser_dataset.add_argument("--MODEL_DIR", type=str, default="non_specified")
         parser_model.add_argument("--data_dim", type=int, default=2)
+        # dispX (1), dispY (1), heading (1), object_type (3), object_category (2), mask (1) -> 9
+        parser_model.add_argument("--num_social_features", type=int, default=9)
         parser_model.add_argument("--obs_len", type=int, default=50)
         parser_model.add_argument("--pred_len", type=int, default=60)
         parser_model.add_argument("--centerline_length", type=int, default=40)
@@ -216,8 +223,15 @@ class TMFModel(pl.LightningModule):
         return noisy_input
     
     def forward(self, batch):
+        # batch
+        #   |
+        #   v
+        # 'argo_id', 'city', 'track_id', 'type', 'category', 'past_trajs', 'fut_trajs', 'gt', 'displ', 'centers', 'headings', 'origin', 
+        # 'rotation', 'rel_centerline', 'centerline_type', 'is_intersection', 'rel_left_bound', 'left_type', 'rel_right_bound', 'right_type'
+        
         # Set batch norm to eval mode in order to prevent updates on the running means,
         # if the weights are frozen
+        
         if self.args.freeze_decoder:
             if self.is_frozen:
                 for module in self.modules():
@@ -229,10 +243,12 @@ class TMFModel(pl.LightningModule):
         ## Social
         
         ### Extract the social features in each sample of the current batch
-        pdb.set_trace()
-        displ, centers = batch["displ"], batch["centers"]
+
+        displ_and_mask, centers, headings = batch["displ"], batch["centers"], batch["headings"]
+        object_types, object_categories = batch["type"], batch["category"]
         rotation, origin = batch["rotation"], batch["origin"]
-        agents_per_sample = [x.shape[0] for x in displ]
+        
+        agents_per_sample = [x.shape[0] for x in displ_and_mask]
         batch_size = len(agents_per_sample)
         
         ### OBS: For each sequence, we always set the focal (target) agent as the first agent
@@ -245,148 +261,47 @@ class TMFModel(pl.LightningModule):
         
         ### Convert the list of tensors to tensors
         
-        displ_cat = torch.cat(displ, dim=0)
+        displ_and_mask_cat = torch.cat(displ_and_mask, dim=0)
         centers_cat = torch.cat(centers, dim=0)
-        
-        ### Data augmentation (TODO: It should be in collate_fn_dict, in the DataLoader)
+        headings = torch.cat(headings, dim=0)
+        object_types = torch.cat(object_types, dim=0)
+        object_categories = torch.cat(object_categories, dim=0)
 
-        if self.training:
-            displ_cat[:,:,:2] = self.add_noise(displ_cat[:,:,:2], self.args.data_aug_gaussian_noise)
-            centers_cat = self.add_noise(centers_cat, self.args.data_aug_gaussian_noise)
+        #### Include object type, category and orientation in the tensor
+
+        actor_raw_features = torch.zeros((displ_and_mask_cat.shape[0], # number of agents
+                                          displ_and_mask_cat.shape[1], # relative displacements
+                                          self.args.num_social_features)).to(displ_and_mask_cat)
+
+        actor_raw_features[:,:,:2] = displ_and_mask_cat[:,:,:2] # dispX and dispY
+        actor_raw_features[:,:,2] = headings[:,1:self.args.obs_len,:].squeeze(2) # heading (start from 1 and end in obs_len frame to have obs_len - 1 values)
+        actor_raw_features[:,:,3:6] = torch.tile(object_types[:,:].unsqueeze(1),(self.args.obs_len-1,1)) # object types
+        actor_raw_features[:,:,6:8] = torch.tile(object_categories[:,:].unsqueeze(1),(self.args.obs_len-1,1)) # object categories
+        actor_raw_features[:,:,8] = displ_and_mask_cat[:,:,2] # Mask
         
-        linear_output = self.linear_embedding(displ_cat)
+        ### Data augmentation (TODO: It should be in the collate_fn_dict function, in the DataLoader)
+
+        # if self.training:
+        #     actor_raw_features[:,:,:2] = self.add_noise(actor_raw_features[:,:,:2], self.args.data_aug_gaussian_noise)
+        #     centers_cat = self.add_noise(centers_cat, self.args.data_aug_gaussian_noise)
+        
+        linear_output = self.linear_embedding(actor_raw_features)
         pos_encoding = self.pos_encoder(linear_output)
         pos_encoding = pos_encoding + linear_output
 
-        out_transformer = self.encoder_transformer(pos_encoding, agents_per_sample)
-        out_agent_gnn = self.agent_gnn(out_transformer, centers_cat, agents_per_sample)
-
-        social_info = torch.stack([x[0] for x in out_agent_gnn])
+        agents_features = self.encoder_transformer(pos_encoding, agents_per_sample) # Deep social features
         
-        if torch.any(torch.isnan(social_info)):
-            pdb.set_trace()
+        ## Physical (map)
         
-        ## Physical
+        # if self.args.use_map:
+        #     print("pepe")
         
-        if self.args.use_map:
-            
-            ### Get relevant centerlines (non-padded) per scenario
-            
-            rel_candidate_centerlines = batch["rel_candidate_centerlines"]
-            rel_candidate_centerlines = torch.stack(rel_candidate_centerlines,dim=0)
-            
-            # Data augmentation (TODO: It should be in collate_fn_dict, in the DataLoader)
+        out_agent_gnn = self.agent_gnn(agents_features, centers_cat, agents_per_sample)
+        pdb.set_trace()
 
-            # if self.training:
-            #     rel_candidate_centerlines = self.add_noise(rel_candidate_centerlines, self.args.data_aug_gaussian_noise)
-                
-            ### Get the map latent vector associated 
-
-            _, num_centerlines, points_centerline, data_dim = rel_candidate_centerlines.shape
-            rel_candidate_centerlines = rel_candidate_centerlines.contiguous().view(-1, points_centerline, data_dim)
-
-            non_empty_mask = rel_candidate_centerlines.abs().sum(dim=1).sum(dim=1) # A padded-centerline must sum 0.0
-            # in each dimension, and after that both dimensions together
-            rows_mask = torch.where(non_empty_mask == 0.0)[0]
-            non_masked_centerlines = rel_candidate_centerlines.shape[0] - len(rows_mask)
-
-            rel_candidate_centerlines_mask = torch.zeros([rel_candidate_centerlines.shape[0]], device=rel_candidate_centerlines.device).type(torch.bool) # False
-            rel_candidate_centerlines_mask[rows_mask] = True # Padded-centerlines
-            rel_candidate_centerlines_mask_inverted = ~rel_candidate_centerlines_mask # Non-padded centerlines (so, relevant) to True
-            
-            centerlines_per_sample = [] # Relevant centerlines (non-padded) per sequence
-            num_current_centerlines = 0
-            
-            for i in range(rel_candidate_centerlines_mask.shape[0]+1):
-                if i % self.args.num_centerlines == 0 and i > 0: # Next traffic scenario
-                    centerlines_per_sample.append(num_current_centerlines)
-                    num_current_centerlines = 0
-                    
-                    if i == rel_candidate_centerlines_mask.shape[0]:
-                        break
-                if rel_candidate_centerlines_mask_inverted[i]: # Non-masked
-                    num_current_centerlines += 1
-            
-            assert non_masked_centerlines == sum(centerlines_per_sample), \
-                "The number of relevant centerlines do not match"
-        
-            centerlines_per_sample = np.array(centerlines_per_sample)
-            rel_candidate_centerlines_ = rel_candidate_centerlines[rel_candidate_centerlines_mask_inverted,:,:]
-            rel_candidate_centerlines_mask_ = rel_candidate_centerlines_mask.reshape(-1,1).repeat_interleave(points_centerline,dim=1)
-
-            physical_info = self.map_sub_net(rel_candidate_centerlines, rel_candidate_centerlines_mask_) 
-        
-        # Decoder
-        
-        if self.args.use_map:
-            if self.args.final_latent_info == "concat": # Concat info
-                merged_info = torch.cat([social_info, 
-                                        physical_info], 
-                                        dim=1)
-                    
-            if self.args.final_latent_info == "fuse": # Fuse info
-                physical_info = physical_info + self.A2L_1(physical_info, social_info)
-                social_info = social_info + self.L2A_1(social_info, physical_info)
-                
-                physical_info = physical_info + self.A2L_2(physical_info, social_info)
-                social_info = social_info + self.L2A_2(social_info, physical_info)
-                
-                merged_info = social_info
-        else:
-            merged_info = social_info
-
-        if torch.any(torch.isnan(merged_info)):
-            pdb.set_trace()
-                    
-        # If self.args.freeze_decoder is set to True, conf are useless
-        
-        if self.args.decoder == "decoder_residual":
-            pred_traj, conf = self.decoder(merged_info, self.is_frozen, self.current_epoch)
-        elif self.args.decoder == "decoder_temporal":
-            traj_agent_abs_rel = displ_cat[focal_agent_id,:self.args.decoder_temporal_window_size,:self.args.data_dim]
-            last_obs_agent = centers_cat[focal_agent_id,:]
-            
-            decoder_h = merged_info.unsqueeze(0)
-            decoder_c = torch.zeros(tuple(decoder_h.shape)).to(decoder_h)
-            state_tuple = (decoder_h, decoder_c)
-            
-            pred_traj_rel, conf = self.decoder(traj_agent_abs_rel, state_tuple)
-            
-            # Convert relative displacements to absolute coordinates (around origin)
-
-            pred_traj = relative_to_abs_multimodal(pred_traj_rel, last_obs_agent)
-
-        ### In this model we are only predicting
-        ### the focal agent. We would actually 
-        ### have batch_size x num_agents x num_modes x pred_len x data_dim
-        
-        num_agents = 1
-        out = pred_traj.contiguous().view(batch_size, num_agents, -1, self.args.pred_len, self.args.data_dim) 
-        if not self.args.freeze_decoder: conf = conf.view(batch_size, num_agents, -1)
-
-        # Iterate over each batch and transform predictions into the global coordinate frame
-        
-        for i in range(len(out)):
-            out[i] = torch.matmul(out[i], rotation[i]) + origin[i].view(
-                1, 1, 1, -1
-            )
         return out, conf
 
     # Aux class functions
-    
-    def freeze(self):
-        for param in self.parameters():
-            param.requires_grad = False
-
-        self.decoder.unfreeze_layers()
-
-        self.is_frozen = True
-        
-    def full_unfreeze(self):
-        for param in self.parameters():
-            param.requires_grad = True
-            
-        self.is_frozen = False
 
     def prediction_loss(self, preds, gts, conf=None):
         """_summary_
@@ -652,12 +567,15 @@ class TMFModel(pl.LightningModule):
         gt = [x[0].detach().cpu().numpy() for x in val_batch["gt"]]
         if not self.args.freeze_decoder: conf = [x[0].detach().cpu().numpy() for x in conf]
 
-        # if self.save_model_script:
-        #     model_filename = os.path.join(self.args.BASE_DIR,
-        #                                   self.args.MODEL_DIR,
-        #                                   "TFMF_TGR.py")
-        #     os.system(f"cp {model_filename} {self.args.LOG_DIR}")
-        #     self.save_model_script = False
+        if self.save_model_script:
+            pdb.set_trace()
+            # Get current script name
+            
+            model_filename = os.path.join(self.args.BASE_DIR,
+                                          self.args.MODEL_DIR,
+                                          "TFMF_TGR.py")
+            os.system(f"cp {model_filename} {self.args.LOG_DIR}")
+            self.save_model_script = False
             
         return {"predictions": pred, 
                 "groundtruth": gt, 
@@ -685,10 +603,9 @@ class TMFModel(pl.LightningModule):
 # Layers
 
 class LinearEmbedding(nn.Module):
-    def __init__(self,input_size,args):
+    def __init__(self,args):
         super(LinearEmbedding, self).__init__()
-        self.args = args
-        self.input_size = input_size
+        self.input_size = args.num_social_features
         self.output_size = args.social_latent_size
 
         self.encoder_input_layer = nn.Linear(
@@ -702,11 +619,12 @@ class LinearEmbedding(nn.Module):
         return linear_out 
     
 class PositionalEncoding1D(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, args):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         """
         super(PositionalEncoding1D, self).__init__()
+        channels = args.social_latent_size
         self.org_channels = channels
         channels = int(np.ceil(channels / 2) * 2)
         self.channels = channels
@@ -761,7 +679,8 @@ class AgentGNN(nn.Module):
     def __init__(self, args):
         super(AgentGNN, self).__init__()
         self.args = args
-        self.latent_size = args.social_latent_size
+        # self.latent_size = args.social_latent_size # Message-Passing only included social info
+        self.latent_size = args.decoder_latent_size # Message-Passing including social and map info
 
         self.gcn1 = conv.CGConv(self.latent_size, dim=2, batch_norm=True)
         self.gcn2 = conv.CGConv(self.latent_size, dim=2, batch_norm=True)

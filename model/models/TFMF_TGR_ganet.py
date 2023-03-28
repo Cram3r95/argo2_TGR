@@ -160,6 +160,8 @@ class TMFModel(pl.LightningModule):
         parser_dataset.add_argument(
             "--BASE_DIR", type=str, default=BASE_DIR)
         parser_dataset.add_argument(
+            "--DATASET_DIR", type=str, default=DATASET_DIR)
+        parser_dataset.add_argument(
             "--LOG_DIR", type=str, default="non_specified")
         parser_dataset.add_argument(
             "--train_split", type=str, default=os.path.join(
@@ -174,26 +176,38 @@ class TMFModel(pl.LightningModule):
         # Social preprocess
         
         parser_dataset.add_argument(
-            "--train_split_pre", type=str, default=os.path.join(
+            "--train_split_pre_social", type=str, default=os.path.join(
                 BASE_DIR, DATASET_DIR, "processed_social", "train_pre_clean.pkl"))
         parser_dataset.add_argument(
-            "--val_split_pre", type=str, default=os.path.join(
+            "--val_split_pre_social", type=str, default=os.path.join(
                 BASE_DIR, DATASET_DIR, "processed_social", "val_pre_clean.pkl"))
         parser_dataset.add_argument(
-            "--test_split_pre", type=str, default=os.path.join(
+            "--test_split_pre_social", type=str, default=os.path.join(
                 BASE_DIR, DATASET_DIR, "processed_social", "test_pre_clean.pkl"))
         
         # Map preprocess
         
         parser_dataset.add_argument(
             "--train_split_pre_map", type=str, default=os.path.join(
-            BASE_DIR, DATASET_DIR, "processed_map", "train_map_data.pkl"))
+            BASE_DIR, DATASET_DIR, "processed_map", "train_map_data_rot_right_x_multi_agent.pkl"))
         parser_dataset.add_argument(
             "--val_split_pre_map", type=str, default=os.path.join(
-                BASE_DIR, DATASET_DIR, "processed_map", "val_map_data.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_map", "val_map_data_rot_right_x_multi_agent.pkl"))
         parser_dataset.add_argument(
             "--test_split_pre_map", type=str, default=os.path.join(
-                BASE_DIR, DATASET_DIR, "processed_map", "test_map_data.pkl"))
+                BASE_DIR, DATASET_DIR, "processed_map", "test_map_data_rot_right_x_multi_agent.pkl"))
+        
+        # Whole preprocess
+        
+        parser_dataset.add_argument(
+            "--train_split_pre", type=str, default=os.path.join(
+            BASE_DIR, DATASET_DIR, "processed_full", "train_full_data_rot_right_x_multi_agent.pkl"))
+        parser_dataset.add_argument(
+            "--val_split_pre", type=str, default=os.path.join(
+                BASE_DIR, DATASET_DIR, "processed_full", "val_full_data_rot_right_x_multi_agent.pkl"))
+        parser_dataset.add_argument(
+            "--test_split_pre", type=str, default=os.path.join(
+                BASE_DIR, DATASET_DIR, "processed_full", "test_full_data_rot_right_x_multi_agent.pkl"))
         
         parser_dataset.add_argument("--reduce_dataset_size", type=int, default=0)
         parser_dataset.add_argument("--use_preprocessed", type=bool, default=False)
@@ -204,12 +218,12 @@ class TMFModel(pl.LightningModule):
         parser_training.add_argument("--num_epochs", type=int, default=200)
         parser_training.add_argument("--check_val_every_n_epoch", type=int, default=10)
         parser_training.add_argument("--lr_values", type=list, default=[1e-3, 1e-4, 1e-3 , 1e-4])
-        parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 30])
-        parser_training.add_argument("--initial_lr_conf", type=float, default=1e-3)
-        parser_training.add_argument("--min_lr_conf", type=float, default=5e-6)
-        parser_training.add_argument("--wd", type=float, default=0.01)
-        parser_training.add_argument("--batch_size", type=int, default=32)
-        parser_training.add_argument("--val_batch_size", type=int, default=32)
+        parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 45])
+        parser_training.add_argument("--initial_lr_conf", type=float, default=5e-5)
+        parser_training.add_argument("--min_lr_conf", type=float, default=1e-6)
+        parser_training.add_argument("--wd", type=float, default=0.001)
+        parser_training.add_argument("--batch_size", type=int, default=128)
+        parser_training.add_argument("--val_batch_size", type=int, default=128)
         parser_training.add_argument("--workers", type=int, default=0) # TODO: Not working with >= 0
         parser_training.add_argument("--val_workers", type=int, default=0)
         parser_training.add_argument("--gpus", type=int, default=1)
@@ -217,15 +231,17 @@ class TMFModel(pl.LightningModule):
         parser_model = parent_parser.add_argument_group("model")
         parser_dataset.add_argument("--MODEL_DIR", type=str, default="non_specified")
         parser_model.add_argument("--data_dim", type=int, default=2)
+        # dispX (1), dispY (1), heading (1), object_type (3), object_category (2), mask (1) -> 9
+        parser_model.add_argument("--num_social_features", type=int, default=9)
         parser_model.add_argument("--obs_len", type=int, default=50)
         parser_model.add_argument("--pred_len", type=int, default=60)
         parser_model.add_argument("--centerline_length", type=int, default=40)
         parser_model.add_argument("--num_centerlines", type=int, default=6)
         parser_model.add_argument("--num_attention_heads", type=int, default=8)
         parser_model.add_argument("--apply_dropout", type=float, default=0.2)
-        parser_model.add_argument("--data_aug_gaussian_noise", type=float, default=0.05)
-        parser_model.add_argument("--social_latent_size", type=int, default=128)
-        parser_model.add_argument("--map_latent_size", type=int, default=128)
+        parser_model.add_argument("--data_aug_gaussian_noise", type=float, default=0.01)
+        parser_model.add_argument("--social_latent_size", type=int, default=64)
+        parser_model.add_argument("--map_latent_size", type=int, default=64)
         parser_model.add_argument("--final_latent_info", type=str, default="non_specified")
         parser_model.add_argument("--decoder_latent_size", type=int, default=-1)
         parser_model.add_argument("--decoder_temporal_window_size", type=int, default=30) # 49 
@@ -233,10 +249,10 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--freeze_decoder", type=bool, default=False)
         parser_model.add_argument("--mod_steps", type=list, default=[1, 5]) # First unimodal -> Freeze -> Multimodal
         parser_model.add_argument("--mod_freeze_epoch", type=int, default=20)
-        parser_model.add_argument("--mod_full_unfreeze_epoch", type=int, default=40)
+        parser_model.add_argument("--mod_full_unfreeze_epoch", type=int, default=60)
         parser_model.add_argument("--reg_loss_weight", type=float, default=1) # xy predictions
         parser_model.add_argument("--cls_loss_weight", type=float, default=1) # classification = confidences
-        parser_model.add_argument("--epsilon", type=float, default=0.0001)
+        parser_model.add_argument("--epsilon", type=float, default=0.0000001)
 
         return parent_parser
 
@@ -338,7 +354,7 @@ class TMFModel(pl.LightningModule):
         actor_ctrs__ = [actor_ctrs_[0] for actor_ctrs_ in actor_ctrs]
             
         # prediction
-        
+        pdb.set_trace()
         out, feats = self.pred_net(merged_info, actor_idcs__, actor_ctrs__)
 
         # Iterate over each batch and transform predictions into the global coordinate frame

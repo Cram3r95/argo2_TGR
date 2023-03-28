@@ -144,10 +144,12 @@ class ArgoDataExtractor:
         valid_object_type = []
         valid_object_category = []
         
+        SCENE_YAW = df[df['track_id']==df.focal_track_id]['heading'].iloc[OBS_LEN-1] # focal agent, reference for the other agents
+        
         for key in keys:
             idcs = objs[key]    
             tt = trajs[idcs]
-            curr_heading_ = headings[idcs]
+            curr_heading_ = headings[idcs] - SCENE_YAW # To align the orientations w.r.t. the focal agent
             ts = steps[idcs]
             
             rt = np.zeros((110, 3))
@@ -195,7 +197,7 @@ class ArgoDataExtractor:
             pre = res_trajs[0, 49, :2] - res_trajs[0, 48, :2] # 0 since it is the AGENT
             theta = np.arctan2(pre[1], pre[0])
             rotation = np.asarray([[np.cos(theta), -np.sin(theta)],
-                             [np.sin(theta), np.cos(theta)]], np.float32)
+                                   [np.sin(theta),  np.cos(theta)]], np.float32)
 
         res_trajs[:, :, :2] = np.dot(res_trajs[:, :, :2] - origin, rotation) # Dot product of two arrays
         res_trajs[np.where(res_trajs[:, :, 2] == 0)] = 0
@@ -207,8 +209,8 @@ class ArgoDataExtractor:
         sample["argo_id"] = argo_id
         sample["city"] = city
         sample["track_id"] = valid_track_id
-        sample["type"] = valid_object_type
-        sample["category"] = valid_object_category
+        sample["type"] = np.array(valid_object_type)
+        sample["category"] = np.array(valid_object_category)
         
         sample["past_trajs"] = res_trajs # local and rotated coordinates 
         sample["fut_trajs"] = res_fut_trajs # local and rotated coordinates 
