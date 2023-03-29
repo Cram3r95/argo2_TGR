@@ -19,10 +19,10 @@ https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_basic.html
 
 python model/trainers/train_TGR.py --use_preprocessed True \
                     --use_map True \
-                    --devices 2 \
+                    --devices 1 \
                     --final_latent_info "fuse" \
                     --decoder "decoder_residual" \
-                    --exp_name "exp_3_multi_agent_actornet"
+                    --exp_name "exp_6_multi_agent_optim_scheduler"
 """
 # --freeze_decoder True \
 # General purpose imports

@@ -28,7 +28,7 @@ import pytorch_lightning as pl
 
 from scipy import sparse
 
-from torch import nn, Tensor
+from torch import nn, Tensor, optim
 from torch.nn import functional as F
 from torch_geometric.nn import conv
 from torch_geometric.utils import from_scipy_sparse_matrix
@@ -49,7 +49,8 @@ class TMFModel(pl.LightningModule):
     def __init__(self, args):
         super(TMFModel, self).__init__() # allows us to avoid using the base class name explicitly
         self.args = args
-
+        self.args.lr_func = StepLR(self.args.lr_values, self.args.lr_step_epochs)
+        
         # Save model in log_dir as backup
 
         self.save_hyperparameters() # It will enable Lightning to store all the provided arguments under the self.hparams attribute. 
@@ -66,27 +67,27 @@ class TMFModel(pl.LightningModule):
         
         # ## Physical 
         
-        if self.args.use_map:
+        # if self.args.use_map:
             
-            # self.map_sub_net = MapSubNet(self.args)
-            self.map_encoder = BoundariesEncoder(self.args)
+        #     # self.map_sub_net = MapSubNet(self.args)
+        #     # self.map_encoder = BoundariesEncoder(self.args)
                         
-            assert self.args.social_latent_size == self.args.map_latent_size
+        #     assert self.args.social_latent_size == self.args.map_latent_size
             
-            if self.args.final_latent_info == "concat":
-                self.args.decoder_latent_size = self.args.social_latent_size + self.args.map_latent_size
-            # elif self.args.final_latent_info == "fuse":
-            #     self.A2L_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
-            #     self.L2A_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+        #     if self.args.final_latent_info == "concat":
+        #         self.args.decoder_latent_size = self.args.social_latent_size + self.args.map_latent_size
+        #     # elif self.args.final_latent_info == "fuse":
+        #     #     self.A2L_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+        #     #     self.L2A_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
     
-            #     self.A2L_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
-            #     self.L2A_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+        #     #     self.A2L_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+        #     #     self.L2A_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
                 
-            #     self.args.decoder_latent_size = self.args.social_latent_size
-            # else:
-            #     raise AssertionError
-        else:
-            self.args.decoder_latent_size = self.args.social_latent_size
+        #     #     self.args.decoder_latent_size = self.args.social_latent_size
+        #     # else:
+        #     #     raise AssertionError
+        # else:
+        #     self.args.decoder_latent_size = self.args.social_latent_size
         
         self.args.decoder_latent_size = self.args.social_latent_size
         
@@ -166,25 +167,26 @@ class TMFModel(pl.LightningModule):
         parser_dataset.add_argument("--align_image_with_target_x", type=bool, default=True)
 
         parser_training = parent_parser.add_argument_group("training")
-        parser_training.add_argument("--num_epochs", type=int, default=50)
+        parser_training.add_argument("--num_epochs", type=int, default=72)
         parser_training.add_argument("--check_val_every_n_epoch", type=int, default=10)
-        parser_training.add_argument("--lr_values", type=list, default=[1e-3, 1e-4, 1e-3 , 1e-4])
-        parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 45])
+        parser_training.add_argument("--lr_values", type=list, default=[1e-3, 1e-4, 5e-5, 1e-5])
+        parser_training.add_argument("--lr_step_epochs", type=list, default=[40,60,66])
         parser_training.add_argument("--initial_lr", type=float, default=1e-3)
         parser_training.add_argument("--scheduler_reduce_factor", type=float, default=0.1)
         parser_training.add_argument("--scheduler_patience", type=float, default=10)
         parser_training.add_argument("--min_lr", type=float, default=1e-6) 
-        parser_training.add_argument("--wd", type=float, default=0.001)
         parser_training.add_argument("--batch_size", type=int, default=32)
         parser_training.add_argument("--val_batch_size", type=int, default=32)
         parser_training.add_argument("--workers", type=int, default=0) # TODO: Not working with >= 0
         parser_training.add_argument("--val_workers", type=int, default=0)
         parser_training.add_argument("--gpus", type=int, default=1)
-
+        parser_training.add_argument("--optimizer", type=str, default="adam")
+        parser_training.add_argument("--wd", type=float, default=0.001)
+        parser_training.add_argument("--momentum", type=float, default=0.001)
+        
         parser_model = parent_parser.add_argument_group("model")
         parser_dataset.add_argument("--MODEL_DIR", type=str, default="non_specified")
         parser_model.add_argument("--data_dim", type=int, default=2)
-        # dispX (1), dispY (1), heading (1), object_type (3), object_category (2), mask (1) -> 9
         parser_model.add_argument("--num_social_features", type=int, default=9)
         parser_model.add_argument("--obs_len", type=int, default=50)
         parser_model.add_argument("--pred_len", type=int, default=60)
@@ -290,9 +292,9 @@ class TMFModel(pl.LightningModule):
         
         ### Data augmentation (TODO: It should be in the collate_fn_dict function, in the DataLoader)
 
-        if self.training:
-            actor_raw_features[:,:,:2] = self.add_noise(actor_raw_features[:,:,:2], self.args.data_aug_gaussian_noise)
-            centers_cat = self.add_noise(centers_cat, self.args.data_aug_gaussian_noise)
+        # if self.training:
+        #     actor_raw_features[:,:,:2] = self.add_noise(actor_raw_features[:,:,:2], self.args.data_aug_gaussian_noise)
+        #     centers_cat = self.add_noise(centers_cat, self.args.data_aug_gaussian_noise)
         
         linear_output = self.linear_embedding(actor_raw_features)
         pos_encoding = self.pos_encoder(linear_output)
@@ -340,15 +342,29 @@ class TMFModel(pl.LightningModule):
                                                                 verbose=True)
 
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "ade_val"}
-
+        
+        # optimizer = torch.optim.AdamW(
+        #         self.parameters(), weight_decay=self.args.wd)
+        
+        # return {"optimizer": optimizer}
+            
     def on_train_epoch_start(self):
         """
         Get learning rate according to current epoch
         """
 
         for single_param in self.optimizers().param_groups:
+            single_param["lr"] = self.get_lr(self.current_epoch)
             self.log("lr", single_param["lr"], prog_bar=True, sync_dist=True)
-        
+    
+    def get_lr(self, epoch):
+        lr_index = 0
+        for lr_epoch in self.args.lr_step_epochs:
+            if epoch < lr_epoch:
+                break
+            lr_index += 1
+        return self.args.lr_values[lr_index]
+    
     def training_step(self, train_batch, batch_idx):
         """_summary_
 
@@ -1137,4 +1153,83 @@ def actor_gather(actors: List[Tensor]) -> Tuple[Tensor, List[Tensor]]:
         actor_idcs.append(idcs)
         count += num_actors[i]
     return actors, actor_idcs
+
+class Optimizer(object):
+    def __init__(self, params, args, coef=None):
+        self.args = args
+        
+        if not (isinstance(params, list) or isinstance(params, tuple)):
+            params = [params]
+
+        if coef is None:
+            coef = [1.0] * len(params)
+        else:
+            if isinstance(coef, list) or isinstance(coef, tuple):
+                assert len(coef) == len(params)
+            else:
+                coef = [coef] * len(params)
+        self.coef = coef
+
+        param_groups = []
+        for param in params:
+            param_groups.append({"params": param, "lr": 0})
+
+        opt = self.args.optimizer
+        assert opt == "sgd" or opt == "adam"
+        if opt == "sgd":
+            self.opt = optim.SGD(
+                param_groups, momentum=self.args.momentum, weight_decay=self.args.wd
+            )
+        elif opt == "adam":
+            self.opt = optim.Adam(param_groups, weight_decay=0)
+
+        self.lr_func = self.args.lr_func
+
+        # if self.args.clip_grads:
+        #     self.clip_grads = self.args.clip_grads
+        #     self.clip_low = self.args.clip_low
+        #     self.clip_high = self.args.clip_high
+        # else:
+        #     self.clip_grads = False
+
+    def zero_grad(self):
+        self.opt.zero_grad()
+
+    def step(self, epoch):
+        if self.clip_grads:
+            self.clip()
+
+        lr = self.lr_func(epoch)
+        for i, param_group in enumerate(self.opt.param_groups):
+            param_group["lr"] = lr * self.coef[i]
+        self.opt.step()
+        return lr
+
+    def clip(self):
+        low, high = self.clip_low, self.clip_high
+        params = []
+        for param_group in self.opt.param_groups:
+            params += list(filter(lambda p: p.grad is not None, param_group["params"]))
+        for p in params:
+            mask = p.grad.data < low
+            p.grad.data[mask] = low
+            mask = p.grad.data > high
+            p.grad.data[mask] = high
+
+    def load_state_dict(self, opt_state):
+        self.opt.load_state_dict(opt_state)
+
+class StepLR:
+    def __init__(self, lr, lr_epochs):
+        assert len(lr) - len(lr_epochs) == 1
+        self.lr = lr
+        self.lr_epochs = lr_epochs
+
+    def __call__(self, epoch):
+        idx = 0
+        for lr_epoch in self.lr_epochs:
+            if epoch < lr_epoch:
+                break
+            idx += 1
+        return self.lr[idx]
 
