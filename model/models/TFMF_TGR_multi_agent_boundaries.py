@@ -37,8 +37,6 @@ from torch_geometric.utils import from_scipy_sparse_matrix
 
 # Custom imports
 
-from model.models.layers import Conv1d, Res1d, Linear, LinearRes, Null, no_pad_Res1d
-
 # Global variables 
 
 # https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
@@ -61,51 +59,40 @@ class TMFModel(pl.LightningModule):
         
         ## Social
         
-        # self.linear_embedding = LinearEmbedding(self.args)
-        # self.pos_encoder = PositionalEncoding1D(self.args)
-        # self.encoder_transformer = EncoderTransformer(self.args)
+        self.linear_embedding = LinearEmbedding(self.args)
+        self.pos_encoder = PositionalEncoding1D(self.args.social_latent_size)
+        self.encoder_transformer = EncoderTransformer(self.args)
         
-        # ## Physical 
-        
-        # if self.args.use_map:
+        ## Physical 
+
+        if self.args.use_map:
             
-        #     self.map_sub_net = MapSubNet(self.args)
+            self.map_sub_net = BoundariesNet(self.args)
             
-        #     assert self.args.social_latent_size == self.args.map_latent_size
+            assert self.args.social_latent_size == self.args.map_latent_size
             
-        #     if self.args.final_latent_info == "concat":
-        #         self.args.decoder_latent_size = self.args.social_latent_size + self.args.map_latent_size
-        #     elif self.args.final_latent_info == "fuse":
-        #         self.A2L_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
-        #         self.L2A_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+            if self.args.final_latent_info == "concat":
+                self.args.decoder_latent_size = self.args.social_latent_size + self.args.map_latent_size
+            elif self.args.final_latent_info == "fuse":
+                self.A2L_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+                self.L2A_1 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
     
-        #         self.A2L_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
-        #         self.L2A_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+                self.A2L_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
+                self.L2A_2 = TransformerDecoder(self.args.social_latent_size, head_num=self.args.num_attention_heads)
                 
-        #         self.args.decoder_latent_size = self.args.social_latent_size
-        #     else:
-        #         raise AssertionError
-        # else:
-        #     self.args.decoder_latent_size = self.args.social_latent_size
+                self.args.decoder_latent_size = self.args.social_latent_size
+            else:
+                raise AssertionError
+        else:
+            self.args.decoder_latent_size = self.args.social_latent_size
+  
+        ## Global interaction
+
+        self.agent_gnn = AgentGNN(self.args)
         
-        # ## Global interaction
+        # Decoder
         
-        # self.agent_gnn = AgentGNN(self.args)
-        
-        # # Decoder
-        
-        # self.decoder = PredNet(self.args)
-        
-        ## GANet
-        
-        self.actor_net1 = ActorNet(self.args)
-        self.actor_net2 = ActorNet(self.args)
-        self.a2a = A2A(self.args)
-        
-        self.args.decoder_latent_size = self.args.social_latent_size
         self.decoder = PredNet(self.args)
-        
-        ## GANet
 
         # Metrics
 
@@ -175,12 +162,12 @@ class TMFModel(pl.LightningModule):
         parser_dataset.add_argument("--align_image_with_target_x", type=bool, default=True)
 
         parser_training = parent_parser.add_argument_group("training")
-        parser_training.add_argument("--num_epochs", type=int, default=50)
+        parser_training.add_argument("--num_epochs", type=int, default=100)
         parser_training.add_argument("--check_val_every_n_epoch", type=int, default=10)
         parser_training.add_argument("--lr_values", type=list, default=[1e-3, 1e-4, 1e-3 , 1e-4])
         parser_training.add_argument("--lr_step_epochs", type=list, default=[10, 20, 45])
         parser_training.add_argument("--initial_lr", type=float, default=1e-3)
-        parser_training.add_argument("--scheduler_reduce_factor", type=float, default=0.1)
+        parser_training.add_argument("--scheduler_reduce_factor", type=float, default=0.5)
         parser_training.add_argument("--scheduler_patience", type=float, default=10)
         parser_training.add_argument("--min_lr", type=float, default=1e-6) 
         parser_training.add_argument("--wd", type=float, default=0.001)
@@ -214,7 +201,7 @@ class TMFModel(pl.LightningModule):
         parser_model.add_argument("--mod_full_unfreeze_epoch", type=int, default=60)
         parser_model.add_argument("--reg_loss_weight", type=float, default=1) # xy predictions
         parser_model.add_argument("--cls_loss_weight", type=float, default=1) # classification = confidences
-        parser_model.add_argument("--epsilon", type=float, default=0.0000000001)
+        parser_model.add_argument("--epsilon", type=float, default=1e-10)
         parser_model.add_argument("--mgn", type=float, default=0.2) # ?
         parser_model.add_argument("--cls_th", type=float, default=2.0) # ?
         parser_model.add_argument("--cls_ignore", type=float, default=0.2) # ?
@@ -223,18 +210,27 @@ class TMFModel(pl.LightningModule):
   
         return parent_parser
 
-    def add_noise(self, input, factor=1):
+    def add_noise(self, input_tensor, factor=1):
         """_summary_
         Args:
-            input (_type_): _description_
+            input_tensor (_type_): _description_
             factor (int, optional): _description_. Defaults to 1.
         Returns:
             _type_: _description_
         """
+        
+        if self.args.align_image_with_target_x:
+            input_tensor_dim = [int(x) for x in input_tensor.shape]
+            dim = (*input_tensor_dim[:-1],1)
+        
+            noise_x = factor * torch.randn(dim).to(input_tensor)
+            noise_y = factor/2 * torch.randn(dim).to(input_tensor) # Reduce data augmentation in y-axis
+            noise = torch.cat([noise_x,noise_y],-1)
+        else:
+            noise = factor * torch.randn(input_tensor.shape).to(input_tensor)
 
-        noise = factor * torch.randn(input.shape).to(input)
-        noisy_input = input + noise
-        return noisy_input
+        noisy_input_tensor = input_tensor + noise
+        return noisy_input_tensor
     
     def forward(self, batch):
         # batch
@@ -252,10 +248,9 @@ class TMFModel(pl.LightningModule):
         
         ### Extract the social features in each sample of the current batch
 
-        idcs = get_actor_ids(gpu(batch["displ"]))
+        actor_idcs = get_actor_ids(gpu(batch["displ"]))
         displ_and_mask, centers, headings = batch["displ"], gpu(batch["centers"]), batch["headings"]
         object_types, object_categories = batch["type"], batch["category"]
-        rotation, origin = batch["rotation"], batch["origin"]
         
         agents_per_sample = [x.shape[0] for x in displ_and_mask]
         batch_size = len(agents_per_sample)
@@ -294,27 +289,57 @@ class TMFModel(pl.LightningModule):
         #     actor_raw_features[:,:,:2] = self.add_noise(actor_raw_features[:,:,:2], self.args.data_aug_gaussian_noise)
         #     centers_cat = self.add_noise(centers_cat, self.args.data_aug_gaussian_noise)
         
-        # linear_output = self.linear_embedding(actor_raw_features)
-        # pos_encoding = self.pos_encoder(linear_output)
-        # pos_encoding = pos_encoding + linear_output
+        linear_output = self.linear_embedding(actor_raw_features)
+        pos_encoding = self.pos_encoder(linear_output)
+        pos_encoding = pos_encoding + linear_output
 
-        # agents_features = self.encoder_transformer(pos_encoding, agents_per_sample) # Deep social features
+        social_info = self.encoder_transformer(pos_encoding, agents_per_sample) # Deep social features
+        pdb.set_trace()
+        ## Physical 
         
-        # actor_raw_features = displ_and_mask_cat.transpose(1,2)
-        actor_raw_features = actor_raw_features.transpose(1,2)
-        actors_1 = self.actor_net1(actor_raw_features, centers)
-        actors_2 = self.actor_net2(actor_raw_features, centers)
-        actors = actors_1 + actors_2
-        decoder_features = self.a2a(actors, idcs, centers)
-        
-        # ## Physical (map)
+        if self.args.use_map:
+            ### Extract map features
 
-        # decoder_features = self.agent_gnn(agents_features, centers_cat, agents_per_sample)
-        # decoder_features = torch.cat(decoder_features,0) # Concatenate all relevant agents
+            lane_features = torch.cat([torch.cat(batch["centerline_type"],0),
+                                    torch.cat(batch["is_intersection"],0)],-1)
+            
+            left_boundary_features = torch.cat([torch.cat(batch["rel_left_bound"],0),
+                                                torch.cat(batch["left_type"],0)],-1)
+            
+            right_boundary_features = torch.cat([torch.cat(batch["rel_left_bound"],0),
+                                                torch.cat(batch["left_type"],0)],-1)
+
+            ### Encode map features
+            
+            physical_info = self.map_sub_net(lane_features, left_boundary_features, right_boundary_features)
+        
+        ## Features fusion 
+        
+        if self.args.use_map:
+            if self.args.final_latent_info == "concat": # Concat info
+                agents_features = torch.cat([social_info, 
+                                             physical_info], 
+                                             dim=1)
+                    
+            if self.args.final_latent_info == "fuse": # Fuse info
+                physical_info = physical_info + self.A2L_1(physical_info, social_info)
+                social_info = social_info + self.L2A_1(social_info, physical_info)
+                
+                physical_info = physical_info + self.A2L_2(physical_info, social_info)
+                social_info = social_info + self.L2A_2(social_info, physical_info)
+                
+                agents_features = social_info
+        else:
+            agents_features = social_info
+        
+        # Global interaction
+
+        decoder_features = self.agent_gnn(agents_features, centers_cat, agents_per_sample)
+        decoder_features = torch.cat(decoder_features,0) # Concatenate all relevant agents
         
         # Decoder
 
-        out = self.decoder(decoder_features, idcs, centers)
+        out = self.decoder(decoder_features, actor_idcs, centers)
         
         ## Iterate over each batch and transform predictions into the global coordinate frame
         
@@ -441,26 +466,39 @@ class TMFModel(pl.LightningModule):
 class LinearEmbedding(nn.Module):
     def __init__(self,args):
         super(LinearEmbedding, self).__init__()
+        self.args = args
         self.input_size = args.num_social_features
         self.output_size = args.social_latent_size
 
-        self.encoder_input_layer = nn.Linear(
-                in_features=self.input_size, 
-                out_features=self.output_size 
-                    )
+        # self.encoder_input_layer = nn.Linear(
+        #         in_features=self.input_size, 
+        #         out_features=self.output_size 
+        #             )
+        ng=1
+        
+        self.linear = nn.Linear(self.input_size, self.output_size, bias=False) 
+        self.norm = nn.GroupNorm(gcd(ng, self.output_size), self.output_size)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(self.args.apply_dropout)
+            
     def forward(self,linear_input):
 
-        linear_out = F.relu(self.encoder_input_layer(linear_input))
-
+        # linear_out = F.relu(self.encoder_input_layer(linear_input))
+        
+        linear_out = self.linear(linear_input)
+        linear_out = self.norm(linear_out.transpose(1,2))
+        linear_out = self.relu(linear_out.transpose(1,2))
+        linear_out = self.dropout(linear_out)
+        
         return linear_out 
     
 class PositionalEncoding1D(nn.Module):
-    def __init__(self, args):
+    def __init__(self, latent_dim):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         """
         super(PositionalEncoding1D, self).__init__()
-        channels = args.social_latent_size
+        channels = latent_dim
         self.org_channels = channels
         channels = int(np.ceil(channels / 2) * 2)
         self.channels = channels
@@ -515,6 +553,7 @@ class AgentGNN(nn.Module):
     def __init__(self, args):
         super(AgentGNN, self).__init__()
         self.args = args
+
         # self.latent_size = args.social_latent_size # Message-Passing only included social info
         self.latent_size = args.decoder_latent_size # Message-Passing including social and map info
  
@@ -574,77 +613,200 @@ class AgentGNN(nn.Module):
         edge_attr = data[cols] - data[rows]
 
         return edge_attr
-    
-# class Linear(nn.Module):
-#     def __init__(self, n_in, n_out, norm='GN', ng=32, act=True):
-#         super(Linear, self).__init__()
-#         assert(norm in ['GN', 'BN', 'SyncBN'])
 
-#         self.linear = nn.Linear(n_in, n_out, bias=False)
+class BoundariesNet(nn.Module):
+    """_summary_
+
+    Args:
+        nn (_type_): _description_
+    """
+    def __init__(self, args):
+        super(BoundariesNet, self).__init__()
+        self.args = args
         
-#         if norm == 'GN':
-#             self.norm = nn.GroupNorm(gcd(ng, n_out), n_out)
-#         elif norm == 'BN':
-#             self.norm = nn.BatchNorm1d(n_out)
-#         else:
-#             exit('SyncBN has not been added!')
+        latent_dim = 16
+        ng = 1
+        # self.linear_lane = Linear(3,latent_dim,ng=ng)
+        # self.linear_left = Linear(6,latent_dim,ng=ng)
+        # self.linear_right = Linear(6,latent_dim,ng=ng)
         
-#         self.relu = nn.ReLU(inplace=True)
-#         self.act = act
+        self.linear_lane = nn.Linear(3,latent_dim,bias=False)
+        self.norm_lane = nn.GroupNorm(gcd(ng, latent_dim), latent_dim)
+        self.dropout_lane = nn.Dropout(self.args.apply_dropout)
+        
+        self.linear_left_boundary = nn.Linear(6,latent_dim,bias=False)
+        self.norm_left_boundary = nn.GroupNorm(gcd(ng, latent_dim), latent_dim)
+        self.dropout_left_boundary = nn.Dropout(self.args.apply_dropout)
+        
+        self.linear_right_boundary = nn.Linear(6,latent_dim,bias=False)
+        self.norm_right_boundary = nn.GroupNorm(gcd(ng, latent_dim), latent_dim)
+        self.dropout_right_boundary = nn.Dropout(self.args.apply_dropout)
+        
+        self.pos_encoder = PositionalEncoding1D(latent_dim)
+        
+        self.linear1 = nn.Linear(3*40*48,64)
+        self.norm1 = nn.GroupNorm(gcd(ng, 64), 64)
+        self.dropout1 = nn.Dropout(self.args.apply_dropout)
+        
+        self.linear2 = nn.Linear(64,128)
+        self.norm2 = nn.GroupNorm(gcd(ng, 128), 128)
+        
+        self.relu = nn.ReLU(inplace=True)
+        
+    def forward(self, lane_features, left_boundary_features, right_boundary_features):
+        """_summary_
 
-#     def forward(self, x):
-#         out = self.linear(x)
-#         out = self.norm(out)
-#         if self.act:
-#             out = self.relu(out)
-#         return out
+        Args:
+            lanes (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        
+        num_agents,num_lanes,num_points,lane_features_dim = lane_features.shape
+        _,_,_,lane_boundaries_features_dim = left_boundary_features.shape
+
+        lane_features = self.linear_lane(lane_features.view(-1,num_points,lane_features_dim))
+        lane_features = self.norm_lane(lane_features.transpose(1,2))
+        lane_features = self.relu(lane_features.transpose(1,2))
+        lane_features = self.dropout_lane(lane_features)
+        lane_features = self.pos_encoder(lane_features)
+
+        left_boundary_features = self.linear_left_boundary(left_boundary_features.view(-1,num_points,lane_boundaries_features_dim))
+        left_boundary_features = self.norm_left_boundary(left_boundary_features.transpose(1,2))
+        left_boundary_features = self.relu(left_boundary_features.transpose(1,2))
+        left_boundary_features = self.dropout_left_boundary(left_boundary_features)
+        left_boundary_features = self.pos_encoder(left_boundary_features)
+        
+        right_boundary_features = self.linear_right_boundary(right_boundary_features.view(-1,num_points,lane_boundaries_features_dim))
+        right_boundary_features = self.norm_right_boundary(right_boundary_features.transpose(1,2))
+        right_boundary_features = self.relu(right_boundary_features.transpose(1,2))
+        right_boundary_features = self.dropout_right_boundary(right_boundary_features)
+        right_boundary_features = self.pos_encoder(right_boundary_features)                      
+
+        map_feats = torch.cat([lane_features,
+                               left_boundary_features,
+                               right_boundary_features],-1)
+
+        map_feats = map_feats.contiguous().view(num_agents,-1)
+        map_feats = self.dropout1(self.relu(self.norm1(self.linear1(map_feats))))
+        map_feats = self.norm2(self.linear2(map_feats))
+
+        return map_feats
+
+class TransformerDecoder(nn.Module):
+    def __init__(self, hidden_size, head_num=8, dropout=0.1) -> None:
+        super(TransformerDecoder, self).__init__()
+        self.self_attn = nn.MultiheadAttention(hidden_size, head_num, dropout)
+        self.cross_attn = nn.MultiheadAttention(hidden_size, head_num, dropout)
+        
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+        self.dropout4 = nn.Dropout(dropout)
+
+        self.norm1 = nn.LayerNorm(hidden_size)
+        self.norm2 = nn.LayerNorm(hidden_size)
+        self.norm3 = nn.LayerNorm(hidden_size)
+
+        self.linear1 = nn.Linear(hidden_size, 256)
+        self.linear2 = nn.Linear(256, hidden_size)
+
+    def forward(self, x_padding, y_padding):
+
+        self_attn_output = self.self_attn(query=x_padding,
+                                     key=x_padding, 
+                                     value=x_padding)[0]
+        x_padding = x_padding + self.dropout1(self_attn_output)
+        x_padding = self.norm1(x_padding)
+
+        cross_attn_output = self.cross_attn(query=x_padding,
+                                            key=y_padding,
+                                            value=y_padding)[0]
+
+        x_padding = x_padding + self.dropout2(cross_attn_output)
+        x_padding = self.norm2(x_padding)
+
+        output = self.linear1(x_padding)
+        output = F.relu(output)
+        output = self.dropout3(output)
+        output = self.linear2(output)
+
+        x_padding = x_padding + self.dropout4(output)
+        x_padding = self.norm3(x_padding)
+
+        return x_padding
+           
+class Linear(nn.Module):
+    def __init__(self, n_in, n_out, norm='GN', ng=32, act=True):
+        super(Linear, self).__init__()
+        assert(norm in ['GN', 'BN', 'SyncBN'])
+
+        self.linear = nn.Linear(n_in, n_out, bias=False)
+        
+        if norm == 'GN':
+            self.norm = nn.GroupNorm(gcd(ng, n_out), n_out)
+        elif norm == 'BN':
+            self.norm = nn.BatchNorm1d(n_out)
+        else:
+            exit('SyncBN has not been added!')
+        
+        self.relu = nn.ReLU(inplace=True)
+        self.act = act
+
+    def forward(self, x):
+        out = self.linear(x)
+        out = self.norm(out)
+        if self.act:
+            out = self.relu(out)
+        return out
     
-# class LinearRes(nn.Module):
-#     def __init__(self, n_in, n_out, norm='GN', ng=32):
-#         super(LinearRes, self).__init__()
-#         assert(norm in ['GN', 'BN', 'SyncBN'])
+class LinearRes(nn.Module):
+    def __init__(self, n_in, n_out, norm='GN', ng=32):
+        super(LinearRes, self).__init__()
+        assert(norm in ['GN', 'BN', 'SyncBN'])
 
-#         self.linear1 = nn.Linear(n_in, n_out, bias=False)
-#         self.linear2 = nn.Linear(n_out, n_out, bias=False)
-#         self.relu = nn.ReLU(inplace=True)
+        self.linear1 = nn.Linear(n_in, n_out, bias=False)
+        self.linear2 = nn.Linear(n_out, n_out, bias=False)
+        self.relu = nn.ReLU(inplace=True)
 
-#         if norm == 'GN':
-#             self.norm1 = nn.GroupNorm(gcd(ng, n_out), n_out)
-#             self.norm2 = nn.GroupNorm(gcd(ng, n_out), n_out)
-#         elif norm == 'BN':
-#             self.norm1 = nn.BatchNorm1d(n_out)
-#             self.norm2 = nn.BatchNorm1d(n_out)
-#         else:   
-#             exit('SyncBN has not been added!')
+        if norm == 'GN':
+            self.norm1 = nn.GroupNorm(gcd(ng, n_out), n_out)
+            self.norm2 = nn.GroupNorm(gcd(ng, n_out), n_out)
+        elif norm == 'BN':
+            self.norm1 = nn.BatchNorm1d(n_out)
+            self.norm2 = nn.BatchNorm1d(n_out)
+        else:   
+            exit('SyncBN has not been added!')
 
-#         if n_in != n_out:
-#             if norm == 'GN':
-#                 self.transform = nn.Sequential(
-#                     nn.Linear(n_in, n_out, bias=False),
-#                     nn.GroupNorm(gcd(ng, n_out), n_out))
-#             elif norm == 'BN':
-#                 self.transform = nn.Sequential(
-#                     nn.Linear(n_in, n_out, bias=False),
-#                     nn.BatchNorm1d(n_out))
-#             else:
-#                 exit('SyncBN has not been added!')
-#         else:
-#             self.transform = None
+        if n_in != n_out:
+            if norm == 'GN':
+                self.transform = nn.Sequential(
+                    nn.Linear(n_in, n_out, bias=False),
+                    nn.GroupNorm(gcd(ng, n_out), n_out))
+            elif norm == 'BN':
+                self.transform = nn.Sequential(
+                    nn.Linear(n_in, n_out, bias=False),
+                    nn.BatchNorm1d(n_out))
+            else:
+                exit('SyncBN has not been added!')
+        else:
+            self.transform = None
 
-#     def forward(self, x):
-#         out = self.linear1(x)
-#         out = self.norm1(out)
-#         out = self.relu(out)
-#         out = self.linear2(out)
-#         out = self.norm2(out)
+    def forward(self, x):
+        out = self.linear1(x)
+        out = self.norm1(out)
+        out = self.relu(out)
+        out = self.linear2(out)
+        out = self.norm2(out)
 
-#         if self.transform is not None:
-#             out += self.transform(x)
-#         else:
-#             out += x
+        if self.transform is not None:
+            out += self.transform(x)
+        else:
+            out += x
 
-#         out = self.relu(out)
-#         return out
+        out = self.relu(out)
+        return out
     
 class PredNet(nn.Module):
     """
@@ -924,190 +1086,4 @@ def get_actor_ids(actors: List[Tensor]) -> List[Tensor]:
         count += num_actors[i]
 
     return actor_idcs
-
-class ActorNet(nn.Module):
-    """
-    Actor feature extractor with Conv1D
-    """
-    def __init__(self, args):
-        super(ActorNet, self).__init__()
-        self.args = args
-        norm = "GN"
-        ng = 1
-
-        n_in = self.args.num_social_features
-        n_out = [32, 32, 64, 128]
-        blocks = [no_pad_Res1d, Res1d, Res1d, Res1d]
-        num_blocks = [1, 2, 2, 2]
-        # num_blocks = [1, 1, 1, 1]
-
-        groups = []
-        for i in range(len(num_blocks)):
-            group = []
-            if i == 0:
-                group.append(blocks[i](n_in, n_out[i], norm=norm, ng=ng))
-            else:
-                group.append(blocks[i](n_in, n_out[i], stride=2, norm=norm, ng=ng))
-
-            for j in range(1, num_blocks[i]):
-                group.append(blocks[i](n_out[i], n_out[i], norm=norm, ng=ng))
-            groups.append(nn.Sequential(*group))
-            n_in = n_out[i]
-        self.groups = nn.ModuleList(groups)
-
-        n = self.args.social_latent_size
-        lateral = []
-        for i in range(len(n_out)):
-            lateral.append(Conv1d(n_out[i], n, norm=norm, ng=ng, act=False))
-        self.lateral = nn.ModuleList(lateral)
-        
-        ctrs_in = 2
-        self.lstm_h0_init_function = nn.Linear(ctrs_in, n, bias=False)
-        self.lstm_encoder = nn.LSTM(n, n, batch_first=True)
-        
-        self.output = Res1d(n, n, norm=norm, ng=ng)
-        
-    def forward(self, actors: Tensor, actor_ctrs) -> Tensor:
-        actor_ctrs = torch.cat(actor_ctrs, 0)
-        
-        actors_aux = torch.zeros(actors.shape[0],actors.shape[1],50).to(actors)
-        actors_aux[:,:,1:] = actors
-        actors_aux[:,2,0] = actors[:,2,0]
-        
-        out = actors_aux
-        M,d,L = actors.shape
-
-        outputs = []
-        for i in range(len(self.groups)):   
-            out = self.groups[i](out)
-            outputs.append(out)
-
-        out = self.lateral[-1](outputs[-1])
-        for i in range(len(outputs) - 2, -1, -1):
-            out = F.interpolate(out, scale_factor=2, mode="linear", align_corners=False)
-            out += self.lateral[i](outputs[i])    
-        out = self.output(out)
-        out_init = out[:, :, -1]
-    
-        #1. TODO fuse map data as init hidden and cell state
-        h0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, self.args.social_latent_size)
-        c0 = self.lstm_h0_init_function(actor_ctrs).view(1, M, self.args.social_latent_size)
-        #h0 = torch.zeros(1, M, self.args.social_latent_size).cuda()
-        #c0 = torch.zeros(1, M, self.args.social_latent_size).cuda()
-        out = out.transpose(1, 2).contiguous()
-        output, (hn, cn) = self.lstm_encoder(out, (h0, c0))
-        out_lstm = hn.contiguous().view(M, self.args.social_latent_size)
-        out = out_lstm + out_init
-
-        return out
-    
-class A2A(nn.Module):
-    """
-    The actor to actor block performs interactions among actors.
-    """
-    def __init__(self, args):
-        super(A2A, self).__init__()
-        self.args = args
-        self.args.actor2actor_dist = 100.0
-        norm = "GN"
-        ng = 1
-
-        n_actor = self.args.social_latent_size
-        n_map = self.args.map_latent_size
-
-        att = []
-        for i in range(2):
-            att.append(Att(n_actor, n_actor))
-        self.att = nn.ModuleList(att)
-
-    def forward(self, actors: Tensor, actor_idcs: List[Tensor], actor_ctrs: List[Tensor]) -> Tensor:
-        for i in range(len(self.att)):
-            actors = self.att[i](
-                actors,
-                actor_idcs,
-                actor_ctrs,
-                actors,
-                actor_idcs,
-                actor_ctrs,
-                self.args.actor2actor_dist,
-            )
-        return actors
-    
-class Att(nn.Module):
-    """
-    Attention block to pass context nodes information to target nodes
-    This is used in Actor2Map, Actor2Actor, Map2Actor and Map2Map
-    """
-    def __init__(self, n_agt: int, n_ctx: int) -> None:
-        super(Att, self).__init__()
-        norm = "GN"
-        ng = 1
-
-        self.dist = nn.Sequential(
-            nn.Linear(2, n_ctx),
-            nn.ReLU(inplace=True),
-            Linear(n_ctx, n_ctx, norm=norm, ng=ng),
-        )
-
-        self.query = Linear(n_agt, n_ctx, norm=norm, ng=ng)
-
-        self.ctx = nn.Sequential(
-            Linear(3 * n_ctx, n_agt, norm=norm, ng=ng),
-            nn.Linear(n_agt, n_agt, bias=False),
-        )
-
-        self.agt = nn.Linear(n_agt, n_agt, bias=False)
-        self.norm = nn.GroupNorm(gcd(ng, n_agt), n_agt)
-        self.linear = Linear(n_agt, n_agt, norm=norm, ng=ng, act=False)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, agts: Tensor, agt_idcs: List[Tensor], agt_ctrs: List[Tensor], ctx: Tensor, ctx_idcs: List[Tensor], ctx_ctrs: List[Tensor], dist_th: float) -> Tensor:
-        res = agts
-        if len(ctx) == 0:
-            agts = self.agt(agts)
-            agts = self.relu(agts)
-            agts = self.linear(agts)
-            agts += res
-            agts = self.relu(agts)
-            return agts
-
-        batch_size = len(agt_idcs)
-        hi, wi = [], []
-        hi_count, wi_count = 0, 0
-        for i in range(batch_size):
-            dist = agt_ctrs[i].view(-1, 1, 2) - ctx_ctrs[i].view(1, -1, 2)
-            dist = torch.sqrt((dist ** 2).sum(2))
-            mask = dist <= dist_th
-
-            idcs = torch.nonzero(mask, as_tuple=False)
-            if len(idcs) == 0:
-                continue
-
-            hi.append(idcs[:, 0] + hi_count)
-            wi.append(idcs[:, 1] + wi_count)
-            hi_count += len(agt_idcs[i])
-            wi_count += len(ctx_idcs[i])
-        hi = torch.cat(hi, 0)
-        wi = torch.cat(wi, 0)
-
-        agt_ctrs = torch.cat(agt_ctrs, 0)
-        ctx_ctrs = torch.cat(ctx_ctrs, 0)
-        dist = agt_ctrs[hi] - ctx_ctrs[wi]
-        dist = self.dist(dist)
-
-        query = self.query(agts[hi])
-
-        ctx = ctx[wi]
-        ctx = torch.cat((dist, query, ctx), 1)
-        ctx = self.ctx(ctx)
-
-        agts = self.agt(agts)
-        agts.index_add_(0, hi, ctx)
-        agts = self.norm(agts)
-        agts = self.relu(agts)
-
-        agts = self.linear(agts)
-        agts += res
-        agts = self.relu(agts)
-        return agts
 
