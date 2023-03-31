@@ -24,12 +24,16 @@ Flags:
 TODO: Complete
 
 python model/trainers/train_TGR.py --use_preprocessed True \
-                    --devices 5 \
-                    --final_latent_info "concat" \
+                    --devices 2 \
+                    --use_map True \
+                    --final_latent_info "fuse" \
                     --decoder "decoder_residual" \
-                    --exp_name "exp_1_multi_agent_actornet_all_feats"
+                    --exp_name "test2_cos_map_fuse"
+                    
+                    --use_map True \
+                    --freeze_decoder True \
 """
-# --freeze_decoder True \
+
 # General purpose imports
 
 import sys
@@ -95,6 +99,8 @@ def main():
         drop_last=False, # n multi-process loading, the drop_last argument drops the last non-full batch of each worker’s iterable-style dataset replica.
         shuffle=True
     )
+    
+    args.iterations_per_epoch = len(train_loader) # Iterations per epoch
 
     print("Initialize val split ...")
     dataset = ArgoCSVDataset(args.val_split, args.val_split_pre_social, args, 
@@ -147,7 +153,7 @@ def main():
                save_code=True)
     wandb_logger = WandbLogger(save_dir=LOG_DIR)
     args.LOG_DIR = LOG_DIR
-    
+
     model = TMFModel(args)
 
     # distributed training ways : 1 - lightning, 
@@ -163,8 +169,8 @@ def main():
         devices=args.devices,
         accelerator="cuda",
         strategy="ddp" if len(args.devices)>1 else None, # https://pytorch-lightning.readthedocs.io/en/stable/accelerators/gpu_intermediate.html
-        gradient_clip_val=1.1, 
-        gradient_clip_algorithm="value",
+        # gradient_clip_val=1.1, 
+        # gradient_clip_algorithm="value",
         max_epochs=args.num_epochs, 
         # check_val_every_n_epoch=args.check_val_every_n_epoch
         # detect_anomaly=True
